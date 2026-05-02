@@ -238,6 +238,28 @@ int compile_cpp_for_warnings(const char **sources, int source_count,
                                   char *output, size_t output_size);
 
 /*
+ * run_with_timeout - Execute a binary with timeout, capturing output
+ *
+ * WHY: Shared by run_binary() and run_with_valgrind() to avoid
+ *      duplicating pipe/fork/select/read logic. Handles timeout
+ *      via select() with CLOCK_MONOTONIC deadline.
+ *
+ * @param binary - Path to binary (passed to execvp as argv[0])
+ * @param argv - Full argument vector for execvp (including argv[0])
+ * @param output - Buffer for stdout
+ * @param output_size - Size of output buffer
+ * @param error_output - Buffer for stderr
+ * @param error_size - Size of error buffer
+ * @param timeout_sec - Maximum execution time in seconds
+ * @param child_pid - Output: PID of child process
+ * @return Exit code of child, 128+sig if signaled, or -1 on failure/timeout
+ */
+int run_with_timeout(const char *binary, char *const argv[],
+                    char *output, size_t output_size,
+                    char *error_output, size_t error_size,
+                    int timeout_sec, pid_t *child_pid);
+
+/*
  * run_binary - Execute compiled binary with timeout
  *
  * WHY: Need to run test with timeout to catch infinite loops

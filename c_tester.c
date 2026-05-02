@@ -331,19 +331,29 @@ int compile_cpp_for_warnings(const char **sources, int source_count,
 }
 
 /*
- * run_binary - Execute compiled binary with timeout
+ * run_with_timeout - Shared helper: pipe/fork/execvp/select/read
  *
- * WHY: Need to run test with timeout to catch infinite loops
- *      and capture both stdout and stderr for analysis.
+ * WHY: DRY up run_binary() and run_with_valgrind() which share
+ *      identical pipe, fork, select-loop, and read logic.
+ *      Caller builds argv[] and passes it; this function does the rest.
+ *
+ * @param binary - Path to binary (first arg to execvp)
+ * @param argv - Full argument vector (including argv[0])
+ * @param output - Buffer for stdout
+ * @param output_size - Size of output buffer
+ * @param error_output - Buffer for stderr
+ * @param error_size - Size of error buffer
+ * @param timeout_sec - Maximum execution time in seconds
+ * @param child_pid - Output: PID of child process
+ * @return Exit code of child, 128+sig if signaled, or -1 on failure/timeout
  */
-int run_binary(const char *binary, const char *args,
-               char *output, size_t output_size,
-               char *error_output, size_t error_size,
-               int timeout_sec, pid_t *child_pid)
+int run_with_timeout(const char *binary, char *const argv[],
+                    char *output, size_t output_size,
+                    char *error_output, size_t error_size,
+                    int timeout_sec, pid_t *child_pid)
 {
     int stdout_pipe[2], stderr_pipe[2];
     pid_t pid;
-    char *argv[3];
     int max_fd;
     fd_set read_fds;
     struct timeval tv;
@@ -357,28 +367,25 @@ int run_binary(const char *binary, const char *args,
     pid = fork();
     if (pid < 0) {
         close(stdout_pipe[0]);
+        close(stdout_pipe[1]);
         close(stderr_pipe[0]);
+        close(stderr_pipe[1]);
         return -1;
     }
 
     if (pid == 0) {
-        /* Child process */
+        /* Child: redirect stdout/stderr to pipes, then exec */
         close(stdout_pipe[0]);
         close(stderr_pipe[0]);
         dup2(stdout_pipe[1], STDOUT_FILENO);
         dup2(stderr_pipe[1], STDERR_FILENO);
         close(stdout_pipe[1]);
         close(stderr_pipe[1]);
-
-        argv[0] = (char *)binary;
-        argv[1] = (char *)args;
-        argv[2] = NULL;
-
-        execvp(binary, argv);
+        execvp(binary, (char *const *)argv);
         _exit(127);
     }
 
-    /* Parent process */
+    /* Parent: close child-write ends, then monitor with timeout */
     if (child_pid)
         *child_pid = pid;
 
@@ -473,6 +480,29 @@ int run_binary(const char *binary, const char *args,
         return 128 + WTERMSIG(status);
 
     return -1;
+}
+
+/*
+ * run_binary - Execute compiled binary with timeout
+ *
+ * WHY: Need to run test with timeout to catch infinite loops
+ *      and capture both stdout and stderr for analysis.
+ */
+int run_binary(const char *binary, const char *args,
+               char *output, size_t output_size,
+               char *error_output, size_t error_size,
+               int timeout_sec, pid_t *child_pid)
+{
+    char *argv[3];
+
+    argv[0] = (char *)binary;
+    argv[1] = (char *)args;
+    argv[2] = NULL;
+
+    return run_with_timeout(binary, argv,
+                           output, output_size,
+                           error_output, error_size,
+                           timeout_sec, child_pid);
 }
 
 /*
@@ -492,146 +522,24 @@ int run_binary(const char *binary, const char *args,
  * @return Exit code of Valgrind/binary, or -1 on failure/timeout
  */
 int run_with_valgrind(const char *binary,
-                      char *output, size_t output_size,
-                      char *error_output, size_t error_size,
-                      int timeout_sec, pid_t *child_pid)
+                       char *output, size_t output_size,
+                       char *error_output, size_t error_size,
+                       int timeout_sec, pid_t *child_pid)
 {
-    int stdout_pipe[2], stderr_pipe[2];
-    pid_t pid;
-    char *argv[8];
-    int max_fd;
-    fd_set read_fds;
-    struct timeval tv;
-    int stdout_eof = 0, stderr_eof = 0;
-    size_t out_pos = 0, err_pos = 0;
-    int status;
+    char *argv[7];
 
-    if (pipe(stdout_pipe) < 0 || pipe(stderr_pipe) < 0)
-        return -1;
+    argv[0] = "valgrind";
+    argv[1] = "--leak-check=full";
+    argv[2] = "--show-leak-kinds=all";
+    argv[3] = "--track-origins=yes";
+    argv[4] = "--error-exitcode=1";
+    argv[5] = (char *)binary;
+    argv[6] = NULL;
 
-    pid = fork();
-    if (pid < 0) {
-        close(stdout_pipe[0]);
-        close(stderr_pipe[0]);
-        return -1;
-    }
-
-    if (pid == 0) {
-        /* Child process */
-        close(stdout_pipe[0]);
-        close(stderr_pipe[0]);
-        dup2(stdout_pipe[1], STDOUT_FILENO);
-        dup2(stderr_pipe[1], STDERR_FILENO);
-        close(stdout_pipe[1]);
-        close(stderr_pipe[1]);
-
-        argv[0] = "valgrind";
-        argv[1] = "--leak-check=full";
-        argv[2] = "--show-leak-kinds=all";
-        argv[3] = "--track-origins=yes";
-        argv[4] = "--error-exitcode=1";
-        argv[5] = (char *)binary;
-        argv[6] = NULL;
-
-        execvp("valgrind", argv);
-        _exit(127);
-    }
-
-    /* Parent process */
-    if (child_pid)
-        *child_pid = pid;
-
-    close(stdout_pipe[1]);
-    close(stderr_pipe[1]);
-
-    struct timespec deadline;
-    clock_gettime(CLOCK_MONOTONIC, &deadline);
-    deadline.tv_sec += timeout_sec;
-
-    while (!stdout_eof || !stderr_eof) {
-        FD_ZERO(&read_fds);
-        max_fd = 0;
-
-        if (!stdout_eof) {
-            FD_SET(stdout_pipe[0], &read_fds);
-            if (stdout_pipe[0] > max_fd)
-                max_fd = stdout_pipe[0];
-        }
-        if (!stderr_eof) {
-            FD_SET(stderr_pipe[0], &read_fds);
-            if (stderr_pipe[0] > max_fd)
-                max_fd = stderr_pipe[0];
-        }
-
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        long remaining_ms = (deadline.tv_sec - now.tv_sec) * 1000 +
-                            (deadline.tv_nsec - now.tv_nsec) / 1000000;
-        if (remaining_ms <= 0) {
-            kill(pid, SIGKILL);
-            waitpid(pid, &status, 0);
-            close(stdout_pipe[0]);
-            close(stderr_pipe[0]);
-            if (out_pos < output_size)
-                output[out_pos] = '\0';
-            if (err_pos < error_size)
-                error_output[err_pos] = '\0';
-            return -1;
-        }
-
-        tv.tv_sec = remaining_ms / 1000;
-        tv.tv_usec = (remaining_ms % 1000) * 1000;
-
-        int ready = select(max_fd + 1, &read_fds, NULL, NULL, &tv);
-        if (ready < 0)
-            break;
-
-        if (ready == 0) {
-            kill(pid, SIGKILL);
-            waitpid(pid, &status, 0);
-            close(stdout_pipe[0]);
-            close(stderr_pipe[0]);
-            if (out_pos < output_size)
-                output[out_pos] = '\0';
-            if (err_pos < error_size)
-                error_output[err_pos] = '\0';
-            return -1;
-        }
-
-        if (FD_ISSET(stdout_pipe[0], &read_fds)) {
-            ssize_t n = read(stdout_pipe[0], output + out_pos,
-                             output_size - out_pos - 1);
-            if (n <= 0)
-                stdout_eof = 1;
-            else
-                out_pos += n;
-        }
-        if (FD_ISSET(stderr_pipe[0], &read_fds)) {
-            ssize_t n = read(stderr_pipe[0], error_output + err_pos,
-                             error_size - err_pos - 1);
-            if (n <= 0)
-                stderr_eof = 1;
-            else
-                err_pos += n;
-        }
-    }
-
-    close(stdout_pipe[0]);
-    close(stderr_pipe[0]);
-
-    if (out_pos < output_size)
-        output[out_pos] = '\0';
-    if (err_pos < error_size)
-        error_output[err_pos] = '\0';
-
-    waitpid(pid, &status, 0);
-
-    if (WIFEXITED(status))
-        return WEXITSTATUS(status);
-    if (WIFSIGNALED(status))
-        return 128 + WTERMSIG(status);
-
-    return -1;
+    return run_with_timeout("valgrind", argv,
+                           output, output_size,
+                           error_output, error_size,
+                           timeout_sec, child_pid);
 }
 
 /*
@@ -644,8 +552,11 @@ char *generate_temp_path(const char *prefix, char *buffer, size_t buffer_size)
 {
     snprintf(buffer, buffer_size, "/tmp/c_tester_%s_XXXXXX", prefix);
     int fd = mkstemp(buffer);
-    if (fd >= 0)
+    if (fd >= 0) {
         close(fd);
+        /* Fix race condition: unlink the file so another mkstemp won't reuse name */
+        unlink(buffer);
+    }
     return buffer;
 }
 
