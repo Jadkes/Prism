@@ -672,7 +672,7 @@ Final Verification (After ALL tasks):
 
 ---
 
-- [ ] 9. Add edge case tests (large output, timeout, etc.)
+- [x] 9. Add edge case tests (large output, timeout, etc.)
 
   **What to do**:
   - Create test for large output (> pipe buffer size, ~4KB+)
@@ -825,7 +825,7 @@ Final Verification (After ALL tasks):
   Start from clean state. Execute EVERY QA scenario from EVERY task — follow exact steps, capture evidence. Test cross-task integration (features working together, not isolation). Test edge cases: empty state, invalid input, rapid actions. Save to `.sisyphus/evidence/final-qa/`.
   Output: `Scenarios [N/N pass] | Integration [N/N] | Edge Cases [N tested] | VERDICT`
 
-- [ ] F4. **Scope Fidelity Check** — `deep`
+- [x] F4. **Scope Fidelity Check** — `deep`
   For each task: read "What to do", read actual diff (git log/diff). Verify 1:1 — everything in spec was built (no missing), nothing beyond spec was built (no creep). Check "Must NOT do" compliance. Detect cross-task contamination: Task N touching Task M's files. Flag unaccounted changes.
   Output: `Tasks [N/N compliant] | Contamination [CLEAN/N issues] | Unaccounted [CLEAN/N files] | VERDICT`
 

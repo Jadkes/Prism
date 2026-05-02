@@ -1,0 +1,10 @@
+========================================
+  c_tester - C Error Detection Tool
+========================================
+Testing: tests/valgrind_uninit.c
+----------------------------------------
+
+[ERROR] Uninitialized Conditional
+  Fix: A conditional branch depends on an uninitialized value. Initialize the variable before use or ensure all code paths set it.
+
+[ERROR] 1 error(s) detected
