@@ -290,6 +290,52 @@ int compile_cpp_with_tsan(const char **sources, int source_count,
 }
 
 /*
+ * compile_with_analyzer - Compile with GCC static analyzer (-fanalyzer)
+ *
+ * WHY: GCC 13+ has a built-in static analyzer that performs symbolic
+ *      data flow analysis without running the code. Catches leaks,
+ *      use-after-free, double-free, NULL deref, buffer overflows
+ *      at compile time. Requires no runtime execution.
+ *
+ * @param sources - Array of paths to C source files
+ * @param source_count - Number of source files
+ * @param binary - Output binary path
+ * @param output - Buffer for compiler output
+ * @param output_size - Size of output buffer
+ * @return 0 on success, non-zero on failure
+ */
+int compile_with_analyzer(const char **sources, int source_count,
+                      const char *binary,
+                      char *output, size_t output_size)
+{
+    char cmd[MAX_PATH_LEN * 8 + 128];
+    FILE *pipe;
+    size_t bytes_read;
+    int i;
+    size_t pos;
+
+    pos = snprintf(cmd, sizeof(cmd),
+                   "gcc -fanalyzer -g -o '%s'", binary);
+
+    for (i = 0; i < source_count && pos < sizeof(cmd) - 4; i++) {
+        pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
+    }
+
+    pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
+
+    pipe = popen(cmd, "r");
+    if (!pipe) {
+        snprintf(output, output_size, "Failed to start compiler");
+        return -1;
+    }
+
+    bytes_read = fread(output, 1, output_size - 1, pipe);
+    output[bytes_read] = '\0';
+
+    return pclose(pipe);
+}
+
+/*
  * compile_cpp_for_warnings - Compile C++ with warning flags only
  *
  * WHY: Catch C++-specific warnings that sanitizers might suppress.
@@ -325,6 +371,43 @@ int compile_cpp_for_warnings(const char **sources, int source_count,
     }
 
     size_t bytes_read = fread(output, 1, output_size - 1, pipe);
+    output[bytes_read] = '\0';
+
+    return pclose(pipe);
+}
+
+/*
+ * compile_cpp_with_analyzer - Compile C++ with GCC static analyzer (-fanalyzer)
+ *
+ * WHY: C++ version of compile_with_analyzer using g++.
+ *      Catches memory errors, leaks, and undefined behavior at compile time.
+ */
+int compile_cpp_with_analyzer(const char **sources, int source_count,
+                      const char *binary,
+                      char *output, size_t output_size)
+{
+    char cmd[MAX_PATH_LEN * 8 + 128];
+    FILE *pipe;
+    size_t bytes_read;
+    int i;
+    size_t pos;
+
+    pos = snprintf(cmd, sizeof(cmd),
+                   "g++ -fanalyzer -g -o '%s'", binary);
+
+    for (i = 0; i < source_count && pos < sizeof(cmd) - 4; i++) {
+        pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
+    }
+
+    pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
+
+    pipe = popen(cmd, "r");
+    if (!pipe) {
+        snprintf(output, output_size, "Failed to start compiler");
+        return -1;
+    }
+
+    bytes_read = fread(output, 1, output_size - 1, pipe);
     output[bytes_read] = '\0';
 
     return pclose(pipe);
@@ -786,19 +869,23 @@ static const ErrorPattern error_patterns[] = {
       ERR_BUFFER_OVERFLOW, 2 },
     { "Use of uninitialised",   "Uninitialized Value",
       "Valgrind detected use of an uninitialized value. Initialize all variables before use, or check code paths to ensure initialization.",
-      ERR_UNINIT_VAR, 1 },
-    { "Conditional jump or move depends on uninitialised", "Uninitialized Conditional",
-      "A conditional branch depends on an uninitialized value. Initialize the variable before use or ensure all code paths set it.",
-      ERR_UNINIT_VAR, 1 },
-    { "definitely lost",        "Memory Leak (Definite)",
-      "Memory was definitely lost (no pointers remain). Add free() for every malloc/calloc/realloc call and track all allocations.",
-      ERR_MEMORY_LEAK, 1 },
-    { "possibly lost",          "Memory Leak (Possible)",
-      "Memory was possibly lost (pointer may have been moved). Check pointer arithmetic and ensure proper ownership tracking.",
-      ERR_MEMORY_LEAK, 1 },
+ERR_UNINIT_VAR, 1 },
     { "Uninitialised",          "Uninitialized Value",
       "An uninitialized value was used in a way that affects program behavior. Initialize all variables before use.",
       ERR_UNINIT_VAR, 1 },
+    /* GCC -fanalyzer patterns */
+    { "stack-based buffer overflow", "Buffer Overflow",
+      "Writing beyond allocated stack memory. Check array bounds and buffer sizes.",
+      ERR_BUFFER_OVERFLOW, 2 },
+    { "heap-based buffer overflow", "Buffer Overflow",
+      "Writing beyond allocated heap memory. Check buffer sizes before copying data.",
+      ERR_BUFFER_OVERFLOW, 2 },
+    { "use after 'free' of",     "Use After Free",
+      "Memory accessed after being freed. Store NULL after free and check before use.",
+      ERR_USE_AFTER_FREE, 2 },
+    { "double free",            "Double Free",
+      "Memory freed twice. Set pointer to NULL after free.",
+      ERR_USE_AFTER_FREE, 2 },
 };
 
 static const int num_patterns = sizeof(error_patterns) / sizeof(error_patterns[0]);
@@ -1289,7 +1376,9 @@ void print_usage(const char *prog_name, const ColorCodes *colors)
 
     print_colored(colors, colors->bold, "Analysis:\n");
     printf("  --tsan         Use ThreadSanitizer to detect data races\n");
-    printf("  --valgrind     Run under Valgrind for deep memory analysis\n\n");
+    printf("  --analyzer     Use GCC static analyzer (-fanalyzer)\n");
+    printf("  --valgrind     Run under Valgrind for deep memory analysis\n");
+    printf("  --project=<file>   Use compile flags from compile_commands.json\n\n");
 
     print_colored(colors, colors->bold, "Output:\n");
     printf("  --html=<path>  Generate HTML report at specified path\n");
@@ -1297,8 +1386,9 @@ void print_usage(const char *prog_name, const ColorCodes *colors)
 
     print_colored(colors, colors->bold, "Execution:\n");
     printf("  --keep         Keep compiled binary after run\n");
-    printf("  --timeout=N    Set execution timeout in seconds (default: %d)\n\n",
+    printf("  --timeout=N    Set execution timeout in seconds (default: %d)\n",
            DEFAULT_TIMEOUT_SEC);
+    printf("  --jobs=N, -j N Process multiple files in parallel (max: 8)\n\n");
 
     print_colored(colors, colors->bold, "Examples:\n");
     printf("  %s main.c                          Basic error detection\n", prog_name);
@@ -1307,7 +1397,102 @@ void print_usage(const char *prog_name, const ColorCodes *colors)
     printf("  %s --html=report.html main.c       Generate HTML report\n", prog_name);
     printf("  %s main.c utils.c helper.c         Multi-file project\n\n", prog_name);
 
-    printf("Supported files: .c, .cpp, .cxx, .cc\n");
+     printf("Supported files: .c, .cpp, .cxx, .cc\n");
+}
+
+/*
+ * parse_compile_commands - Extract compile flags for a source file
+ *
+ * WHY: compile_commands.json is a standard format (CMake, Bear, etc.)
+ *      Parse it to get the actual compile flags used in the project.
+ *
+ * @param json_path - Path to compile_commands.json
+ * @param source_file - Source file to find flags for
+ * @param flags_output - Output: extracted flags string
+ * @param flags_size - Size of flags buffer
+ * @return 0 on success, -1 on error
+ */
+int parse_compile_commands(const char *json_path, const char *source_file,
+                          char *flags_output, size_t flags_size)
+{
+    char cmd[4096];
+    FILE *pipe;
+    size_t bytes_read;
+
+    /* Check if jq is available */
+    if (system("which jq > /dev/null 2>&1") != 0) {
+        snprintf(flags_output, flags_size, "jq not found. Install jq to use compile_commands.json");
+        return -1;
+    }
+
+    /* Use jq to extract the command for this source file */
+    snprintf(cmd, sizeof(cmd),
+             "jq -r '.[] | select(.file | endswith(\"%s\")) | .command' '%s' 2>/dev/null",
+             source_file, json_path);
+
+    pipe = popen(cmd, "r");
+    if (!pipe) {
+        snprintf(flags_output, flags_size, "Failed to run jq");
+        return -1;
+    }
+
+    bytes_read = fread(flags_output, 1, flags_size - 1, pipe);
+    flags_output[bytes_read] = '\0';
+    pclose(pipe);
+
+    /* Trim whitespace */
+    trim_whitespace(flags_output);
+
+    if (flags_output[0] == '\0') {
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
+ * run_with_compile_flags - Compile using flags from compile_commands.json
+ *
+ * WHY: Use the exact flags from the project's build system
+ *      instead of guessing. This ensures accurate analysis.
+ *
+ * @param sources - Array of source files
+ * @param source_count - Number of source files
+ * @param flags - Flags string from compile_commands.json
+ * @param binary - Output binary path
+ * @param output - Buffer for compiler output
+ * @param output_size - Size of output buffer
+ * @return 0 on success, non-zero on failure
+ */
+int run_with_compile_flags(const char **sources, int source_count,
+                           const char *flags,
+                           const char *binary,
+                           char *output, size_t output_size)
+{
+    char cmd[MAX_PATH_LEN * 8 + 1024];
+    FILE *pipe;
+    size_t bytes_read;
+    int i;
+    size_t pos;
+
+    pos = snprintf(cmd, sizeof(cmd), "%s -o '%s'", flags, binary);
+
+    for (i = 0; i < source_count && pos < sizeof(cmd) - 4; i++) {
+        pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
+    }
+
+    pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
+
+    pipe = popen(cmd, "r");
+    if (!pipe) {
+        snprintf(output, output_size, "Failed to start compiler");
+        return -1;
+    }
+
+    bytes_read = fread(output, 1, output_size - 1, pipe);
+    output[bytes_read] = '\0';
+
+    return pclose(pipe);
 }
 
 /*
@@ -1328,9 +1513,12 @@ int main(int argc, char *argv[])
     bool keep_binary = false;
     bool use_color = true;
     bool use_tsan = false;
+    bool use_analyzer = false;
     bool use_valgrind = false;
+    char project_json[MAX_PATH_LEN] = {0};
     const char *html_path = NULL;
     int timeout_sec = DEFAULT_TIMEOUT_SEC;
+    int jobs = 1;
     int error_count = 0;
     int i;
 
@@ -1344,13 +1532,32 @@ int main(int argc, char *argv[])
             timeout_sec = atoi(argv[i] + 10);
             if (timeout_sec <= 0)
                 timeout_sec = DEFAULT_TIMEOUT_SEC;
+        } else if (strncmp(argv[i], "--jobs=", 8) == 0) {
+            fprintf(stderr, "[debug] Matched --jobs= at argv[%d]='%s'\n", i, argv[i]);
+            jobs = atoi(argv[i] + 8);
+            fprintf(stderr, "[debug] After parsing --jobs=: jobs=%d\n", jobs);
+            if (jobs < 1) jobs = 1;
+            if (jobs > 8) jobs = 8;
+        } else if (strcmp(argv[i], "--jobs") == 0 && i + 1 < argc) {
+            jobs = atoi(argv[++i]);
+            if (jobs < 1) jobs = 1;
+            if (jobs > 8) jobs = 8;
+        } else if (strcmp(argv[i], "-j") == 0 && i + 1 < argc) {
+            jobs = atoi(argv[++i]);
+            if (jobs < 1) jobs = 1;
+            if (jobs > 8) jobs = 8;
         } else if (strcmp(argv[i], "--no-color") == 0) {
             use_color = false;
             init_colors(&colors, use_color);
         } else if (strcmp(argv[i], "--tsan") == 0) {
             use_tsan = true;
+        } else if (strcmp(argv[i], "--analyzer") == 0) {
+            use_analyzer = true;
         } else if (strcmp(argv[i], "--valgrind") == 0) {
             use_valgrind = true;
+        } else if (strncmp(argv[i], "--project=", 10) == 0) {
+            strncpy(project_json, argv[i] + 10, sizeof(project_json) - 1);
+            project_json[sizeof(project_json) - 1] = '\0';
         } else if (strncmp(argv[i], "--html=", 7) == 0) {
             html_path = argv[i] + 7;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -1382,71 +1589,190 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* Limit jobs to number of CPUs if jobs > sysconf(_SC_NPROCESSORS_ONLN) */
+    long cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
+    if (cpu_count < 1) cpu_count = 1;
+    if (jobs > cpu_count) {
+        jobs = (int)cpu_count;
+        if (jobs > 8) jobs = 8;
+    }
+
+    /* Parallel processing with fork() + waitpid() */
+    fprintf(stderr, "[debug] Checking parallel: jobs=%d, source_count=%d\n", jobs, source_count);
+    if (jobs > 1 && source_count > 1) {
+        int active_children = 0;
+        int total_errors = 0;
+
+        print_colored(&colors, colors.cyan, "[parallel] ");
+        printf("Processing %d files with %d parallel jobs\n", source_count, jobs);
+        fflush(stdout);
+
+        for (i = 0; i < source_count; i++) {
+            /* Wait if at max jobs */
+            while (active_children >= jobs) {
+                int status;
+                pid_t done = waitpid(-1, &status, 0);
+                active_children--;
+                if (done > 0) {
+                    if (WIFEXITED(status)) {
+                        total_errors += WEXITSTATUS(status);
+                    }
+                }
+            }
+
+            pid_t pid = fork();
+            if (pid == 0) {
+                /* Child: process ONE file by execing c_tester */
+                char timeout_str[32];
+                char project_str[MAX_PATH_LEN + 16];
+                char html_str[MAX_PATH_LEN + 16];
+
+                snprintf(timeout_str, sizeof(timeout_str), "--timeout=%d", timeout_sec);
+
+                /* Build argument list for child */
+                int arg_idx = 0;
+                char *child_argv[32];
+                child_argv[arg_idx++] = "./c_tester";
+                if (keep_binary) child_argv[arg_idx++] = "--keep";
+                child_argv[arg_idx++] = timeout_str;
+                if (use_tsan) child_argv[arg_idx++] = "--tsan";
+                if (use_valgrind) child_argv[arg_idx++] = "--valgrind";
+                if (project_json[0]) {
+                    snprintf(project_str, sizeof(project_str), "--project=%s", project_json);
+                    child_argv[arg_idx++] = project_str;
+                }
+                if (html_path) {
+                    snprintf(html_str, sizeof(html_str), "--html=%s", html_path);
+                    child_argv[arg_idx++] = html_str;
+                }
+                child_argv[arg_idx++] = (char *)source_files[i];
+                child_argv[arg_idx++] = NULL;
+
+                execvp("./c_tester", child_argv);
+                _exit(127);
+            } else if (pid > 0) {
+                active_children++;
+            }
+        }
+
+        /* Wait for all remaining children */
+        while (active_children > 0) {
+            int status;
+            pid_t done = waitpid(-1, &status, 0);
+            active_children--;
+            if (done > 0) {
+                if (WIFEXITED(status)) {
+                    total_errors += WEXITSTATUS(status);
+                }
+            }
+        }
+
+        return total_errors > 0 ? EXIT_ERRORS_FOUND : EXIT_CLEAN;
+    }
+
+    /* Single-file or jobs=1 processing */
     print_banner(&colors, source_files, source_count);
 
     generate_temp_path("c_tester", binary_path, sizeof(binary_path));
 
     memset(&result, 0, sizeof(result));
 
-    if (use_valgrind) {
-        if (compile_fallback(source_files, source_count, binary_path,
-                            result.compiler_output,
-                            sizeof(result.compiler_output)) == 0) {
-            result.compilation_success = true;
+    /* Use compile_commands.json if specified */
+    if (project_json[0]) {
+        char project_flags[4096];
+        if (parse_compile_commands(project_json, source_files[0],
+                                   project_flags, sizeof(project_flags)) == 0) {
+            print_colored(&colors, colors.cyan, "[project] ");
+            printf("Using flags from %s\n", project_json);
+            if (run_with_compile_flags(source_files, source_count,
+                                        project_flags,
+                                        binary_path,
+                                        result.compiler_output,
+                                        sizeof(result.compiler_output)) == 0) {
+                result.compilation_success = true;
+            }
+        } else {
+            print_colored(&colors, colors.yellow, "[project] ");
+            printf("Could not parse %s, falling back to auto-detection\n",
+                   project_json);
         }
-    } else if (is_cpp_file(source_files[0])) {
-        if (use_tsan) {
-            if (compile_cpp_with_tsan(source_files, source_count, binary_path,
+    }
+
+    if (!result.compilation_success) {
+        if (use_valgrind) {
+            if (compile_fallback(source_files, source_count, binary_path,
+                                result.compiler_output,
+                                sizeof(result.compiler_output)) == 0) {
+                result.compilation_success = true;
+            }
+        } else if (is_cpp_file(source_files[0])) {
+            if (use_tsan) {
+                if (compile_cpp_with_tsan(source_files, source_count, binary_path,
+                                           result.compiler_output,
+                                           sizeof(result.compiler_output)) == 0) {
+                    result.compilation_success = true;
+                }
+            } else if (compile_cpp_with_sanitizers(source_files, source_count,
+                                                    binary_path,
+                                                    result.compiler_output,
+                                                    sizeof(result.compiler_output)) == 0) {
+                result.compilation_success = true;
+                char warn_buf[MAX_OUTPUT_SIZE];
+                if (compile_cpp_for_warnings(source_files, source_count,
+                                              warn_buf, sizeof(warn_buf)) == 0 &&
+                    warn_buf[0] != '\0') {
+                    size_t len = strlen(result.compiler_output);
+                    if (len < sizeof(result.compiler_output) - 1) {
+                        strncat(result.compiler_output, warn_buf,
+                                sizeof(result.compiler_output) - len - 1);
+                    }
+                }
+            } else if (compile_fallback(source_files, source_count, binary_path,
+                                        result.compiler_output,
+                                        sizeof(result.compiler_output)) == 0) {
+                result.compilation_success = true;
+            }
+        } else if (use_analyzer) {
+            if (is_cpp_file(source_files[0])) {
+                if (compile_cpp_with_analyzer(source_files, source_count,
+                                          binary_path,
+                                          result.compiler_output,
+                                          sizeof(result.compiler_output)) == 0) {
+                    result.compilation_success = true;
+                }
+            } else if (compile_with_analyzer(source_files, source_count,
+                                           binary_path,
                                            result.compiler_output,
                                            sizeof(result.compiler_output)) == 0) {
                 result.compilation_success = true;
             }
-        } else if (compile_cpp_with_sanitizers(source_files, source_count,
-                                                   binary_path,
-                                                   result.compiler_output,
-                                                   sizeof(result.compiler_output)) == 0) {
-            result.compilation_success = true;
-            char warn_buf[MAX_OUTPUT_SIZE];
-            if (compile_cpp_for_warnings(source_files, source_count,
-                                          warn_buf, sizeof(warn_buf)) == 0 &&
-                warn_buf[0] != '\0') {
-                size_t len = strlen(result.compiler_output);
-                if (len < sizeof(result.compiler_output) - 1) {
-                    strncat(result.compiler_output, warn_buf,
-                            sizeof(result.compiler_output) - len - 1);
-                }
-            }
-        } else if (compile_fallback(source_files, source_count, binary_path,
+        } else {
+            if (use_tsan) {
+                if (compile_with_tsan(source_files, source_count, binary_path,
                                        result.compiler_output,
                                        sizeof(result.compiler_output)) == 0) {
-            result.compilation_success = true;
-        }
-    } else {
-        if (use_tsan) {
-            if (compile_with_tsan(source_files, source_count, binary_path,
-                                   result.compiler_output,
-                                   sizeof(result.compiler_output)) == 0) {
+                    result.compilation_success = true;
+                }
+            } else if (compile_with_sanitizers(source_files, source_count,
+                                              binary_path,
+                                              result.compiler_output,
+                                              sizeof(result.compiler_output)) == 0) {
+                result.compilation_success = true;
+                char warn_buf[MAX_OUTPUT_SIZE];
+                if (compile_for_warnings(source_files, source_count,
+                                          warn_buf, sizeof(warn_buf)) == 0 &&
+                    warn_buf[0] != '\0') {
+                    size_t len = strlen(result.compiler_output);
+                    if (len < sizeof(result.compiler_output) - 1) {
+                        strncat(result.compiler_output, warn_buf,
+                                sizeof(result.compiler_output) - len - 1);
+                    }
+                }
+            } else if (compile_fallback(source_files, source_count, binary_path,
+                                        result.compiler_output,
+                                        sizeof(result.compiler_output)) == 0) {
                 result.compilation_success = true;
             }
-        } else if (compile_with_sanitizers(source_files, source_count,
-                                            binary_path,
-                                            result.compiler_output,
-                                            sizeof(result.compiler_output)) == 0) {
-            result.compilation_success = true;
-            char warn_buf[MAX_OUTPUT_SIZE];
-            if (compile_for_warnings(source_files, source_count,
-                                          warn_buf, sizeof(warn_buf)) == 0 &&
-                warn_buf[0] != '\0') {
-                size_t len = strlen(result.compiler_output);
-                if (len < sizeof(result.compiler_output) - 1) {
-                    strncat(result.compiler_output, warn_buf,
-                            sizeof(result.compiler_output) - len - 1);
-                }
-            }
-        } else if (compile_fallback(source_files, source_count, binary_path,
-                                       result.compiler_output,
-                                       sizeof(result.compiler_output)) == 0) {
-            result.compilation_success = true;
         }
     }
 

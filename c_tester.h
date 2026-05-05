@@ -187,6 +187,42 @@ int compile_for_warnings(const char **sources, int source_count,
                          char *output, size_t output_size);
 
 /*
+ * compile_with_analyzer - Compile with GCC static analyzer (-fanalyzer)
+ *
+ * WHY: GCC 13+ has a built-in static analyzer that performs symbolic
+ *      data flow analysis without running the code. Catches leaks,
+ *      use-after-free, double-free, NULL deref, buffer overflows
+ *      at compile time. Requires no runtime execution.
+ *
+ * @param sources - Array of paths to C source files
+ * @param source_count - Number of source files
+ * @param binary - Output binary path
+ * @param output - Buffer for compiler output
+ * @param output_size - Size of output buffer
+ * @return 0 on success, non-zero on failure
+ */
+int compile_with_analyzer(const char **sources, int source_count,
+                       const char *binary,
+                       char *output, size_t output_size);
+
+/*
+ * compile_cpp_with_analyzer - Compile C++ with GCC static analyzer (-fanalyzer)
+ *
+ * WHY: C++ version of compile_with_analyzer using g++.
+ *      Catches memory errors, leaks, and undefined behavior at compile time.
+ *
+ * @param sources - Array of paths to C++ source files
+ * @param source_count - Number of source files
+ * @param binary - Output binary path
+ * @param output - Buffer for compiler output
+ * @param output_size - Size of output buffer
+ * @return 0 on success, non-zero on failure
+ */
+int compile_cpp_with_analyzer(const char **sources, int source_count,
+                          const char *binary,
+                          char *output, size_t output_size);
+
+/*
  * compile_cpp_with_sanitizers - Compile C++ sources with ASan and UBSan
  *
  * WHY: Same as compile_with_sanitizers but uses g++ for C++ sources.
@@ -324,16 +360,41 @@ int classify_error(const char *error_line);
  * @return Number of errors found
  */
 int parse_sanitizer_errors(const char *error_output,
-                           DetectedError *errors, int max_errors);
+                            DetectedError *errors, int max_errors);
 
 /*
- * parse_signal_errors - Detect errors from signal termination
+ * parse_compile_commands - Extract compile flags for a source file
  *
- * WHY: When a program crashes with a signal (SIGSEGV, SIGABRT, etc.),
- *      we can classify the error based on the signal received.
+ * WHY: compile_commands.json is a standard format (CMake, Bear, etc.)
+ *      Parse it to get the actual compile flags used in the project.
+ *
+ * @param json_path - Path to compile_commands.json
+ * @param source_file - Source file to find flags for
+ * @param flags_output - Output: extracted flags string
+ * @param flags_size - Size of flags buffer
+ * @return 0 on success, -1 on error
  */
-int parse_signal_errors(const char *error_output, int exit_code,
-                        int signal, DetectedError *errors, int max_errors);
+int parse_compile_commands(const char *json_path, const char *source_file,
+                          char *flags_output, size_t flags_size);
+
+/*
+ * run_with_compile_flags - Compile using flags from compile_commands.json
+ *
+ * WHY: Use the exact flags from the project's build system
+ *      instead of guessing. This ensures accurate analysis.
+ *
+ * @param sources - Array of source files
+ * @param source_count - Number of source files
+ * @param flags - Flags string from compile_commands.json
+ * @param binary - Output binary path
+ * @param output - Buffer for compiler output
+ * @param output_size - Size of output buffer
+ * @return 0 on success, non-zero on failure
+ */
+int run_with_compile_flags(const char **sources, int source_count,
+                           const char *flags,
+                           const char *binary,
+                           char *output, size_t output_size);
 
 /*
  * generate_fix_suggestion - Create fix suggestion for detected error
