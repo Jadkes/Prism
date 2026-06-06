@@ -3226,14 +3226,14 @@ int run_ultra_analysis(const char **sources, int source_count,
 
     if (colors) {
         print_colored(colors, colors->cyan, "[ultra] ");
-        printf("Phase 2: %d/%d compiled — launching 22 analysis passes...\n",
+        printf("Phase 2: %d/%d compiled — launching 26 analysis passes...\n",
                compile_success_count, num_to_compile);
         fflush(stdout);
     }
 
     /* ─── Analysis Wave: each pass runs in a forked child,
      *     writes results to a temp file, parent collects ─── */
-#define MAX_ANALYSIS_PASSES 24
+#define MAX_ANALYSIS_PASSES 28
     struct {
         pid_t pid;
         char result_file[MAX_PATH_LEN];
@@ -3845,6 +3845,79 @@ int run_ultra_analysis(const char **sources, int source_count,
         }
         if (pid > 0) { analysis_passes[num_analysis].pid=pid; num_analysis++; }
     }
+	/* 25. AST dangerous call detection + check engine modules */
+	{
+	    pid_t pid = fork();
+	    if (pid == 0) {
+	        FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
+	        if (!rfp) _exit(0);
+	        DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+	        AnnotationDB *ann = ann_load(NULL);
+	        if (ann) {
+	            for (int fi = 0; fi < source_count && lc < 16; fi++) {
+	                ASTContext *actx = ast_parse(sources[fi], NULL);
+	                if (!actx) continue;
+
+	                DangerousCall dcs[16]; int ndc = 0;
+	                ndc = ast_get_dangerous_calls(actx, dcs, 16);
+	                for (int d = 0; d < ndc && lc < 16; d++) {
+	                    snprintf(le[lc].title, sizeof(le[lc].title),
+	                             "AST: Unsafe %.64s Call", dcs[d].function_name);
+	                    snprintf(le[lc].fix_suggestion, sizeof(le[lc].fix_suggestion),
+	                             "'%.64s' at %s:%u \xe2\x80\x94 use a safer alternative",
+	                             dcs[d].function_name, dcs[d].source_file, dcs[d].line);
+	                    le[lc].type = dcs[d].type;
+	                    le[lc].severity = dcs[d].severity;
+	                    le[lc].has_source = true;
+	                    le[lc].source_line = dcs[d].line;
+	                    lc++;
+	                }
+
+	                DetectedError ce[16];
+	                memset(ce, 0, sizeof(ce));
+	                int nce = check_engine_run(actx, ann, ce, 16);
+	                for (int c = 0; c < nce && lc < 16; c++) {
+	                    le[lc] = ce[c];
+	                    lc++;
+	                }
+	                ast_free(actx);
+	            }
+	            ann_free(ann);
+	        }
+	        ULTRA_CHILD_RESULT(lo,lc,le); fclose(rfp); _exit(0);
+	    }
+	    if (pid > 0) { analysis_passes[num_analysis].pid=pid; num_analysis++; }
+	}
+
+	/* 26. AST symbolic execution (path-sensitive check) */
+	{
+	    pid_t pid = fork();
+	    if (pid == 0) {
+	        FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
+	        if (!rfp) _exit(0);
+	        DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+	        for (int fi = 0; fi < source_count && lc < 16; fi++) {
+	            SymPathSet ps = sym_analyze_source(sources[fi], NULL, 0, 128);
+	            if (ps.path_count > 1) {
+	                snprintf(le[lc].title, sizeof(le[lc].title),
+	                         "AST: %d feasible paths in %s",
+	                         ps.path_count, sources[fi]);
+	                snprintf(le[lc].fix_suggestion, sizeof(le[lc].fix_suggestion),
+	                         "File has %d symbolic execution paths \xe2\x80\x94 "
+	                         "test each branch combination for correctness.",
+	                         ps.path_count);
+	                le[lc].type = ERR_NONE;
+	                le[lc].severity = 1;
+	                le[lc].has_source = false;
+	                lc++;
+	            }
+	            sym_free_paths(&ps);
+	        }
+	        ULTRA_CHILD_RESULT(lo,lc,le); fclose(rfp); _exit(0);
+	    }
+	    if (pid > 0) { analysis_passes[num_analysis].pid=pid; num_analysis++; }
+	}
+
 
     /* ─── Collect results from all analysis children ─── */
     for (int p = 0; p < num_analysis; p++) {
