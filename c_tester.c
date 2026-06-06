@@ -14,6 +14,7 @@
  */
 
 #include "c_tester.h"
+#include "ast_backend.h"
 
 /*
  * compile_with_sanitizers - Compile source files with ASan and UBSan
@@ -2081,6 +2082,9 @@ void print_usage(const char *prog_name, const ColorCodes *colors)
     printf("  --rerun=N      Run N times to detect non-deterministic bugs\n");
     printf("  --resources    Check for file descriptor / OS resource leaks\n");
     printf("  --danger       Scan source for dangerous API calls\n");
+    printf("  --ast          AST-level analysis via libclang (detects dangerous\n");
+    printf("                 calls via cursor matching, not regex — no false\n");
+    printf("                 positives from comments or string literals)\n");
     printf("  --gcov         Run with code coverage instrumentation\n");
     printf("  --libfuzzer    Run libFuzzer (requires clang + fuzz target)\n");
     printf("  --gdb          On crash, automatically run GDB for backtrace\n");
@@ -3927,6 +3931,7 @@ int main(int argc, char *argv[])
     bool use_generate_baseline = false;
     bool use_install_hook = false;
     bool use_uninstall_hook = false;
+    bool use_ast = false;
     char baseline_path[MAX_PATH_LEN] = {0};
     char git_bisect_ref[256] = {0};
 
@@ -3991,6 +3996,8 @@ int main(int argc, char *argv[])
             use_gcov = true;
         } else if (strcmp(argv[i], "--libfuzzer") == 0) {
             use_libfuzzer = true;
+        } else if (strcmp(argv[i], "--ast") == 0) {
+            use_ast = true;
         } else if (strcmp(argv[i], "--cache") == 0) {
             use_cache = true;
         } else if (strcmp(argv[i], "--clear-cache") == 0) {
@@ -4439,6 +4446,61 @@ int main(int argc, char *argv[])
         }
         print_colored(&colors, colors.green, "[OK] ");
         printf("No dangerous APIs found\n");
+        return EXIT_CLEAN;
+    }
+
+    /* --ast: AST-based analysis via libclang, no compilation needed */
+    if (use_ast) {
+        unsigned int ast_modes[32] = {0};
+        int ast_total = 0;
+        print_colored(&colors, colors.bold, "[AST Analysis]\n");
+
+        for (int fi = 0; fi < source_count && ast_total < 32; fi++) {
+            printf("  Parsing: %s\n", source_files[fi]);
+            ASTContext *actx = ast_parse(source_files[fi], NULL);
+            if (!actx) {
+                printf("  \033[33mWarning:\033[0m Could not parse %s "
+                       "(may have syntax errors)\n", source_files[fi]);
+                continue;
+            }
+
+            DangerousCall dcs[32];
+            int ndc = ast_get_dangerous_calls(actx, dcs, 32);
+            FunctionInfo funcs[64];
+            int nf = ast_get_functions(actx, funcs, 64);
+
+            for (int j = 0; j < ndc && ast_total < 32; j++) {
+                DetectedError de;
+                memset(&de, 0, sizeof(de));
+                de.type = dcs[j].type;
+                de.severity = dcs[j].severity;
+                de.has_source = true;
+                de.source_line = dcs[j].line;
+                strncpy(de.source_file, dcs[j].source_file,
+                        sizeof(de.source_file) - 1);
+                snprintf(de.title, sizeof(de.title),
+                         "Unsafe %.64s Call", dcs[j].function_name);
+                snprintf(de.fix_suggestion, sizeof(de.fix_suggestion),
+                         "'%.64s' at %.256s:%u — use a safer alternative",
+                         dcs[j].function_name,
+                         dcs[j].source_file, dcs[j].line);
+                ast_total = merge_analysis_error(errors, ast_total, 32,
+                                                  &de, ast_modes, 1u);
+            }
+
+            printf("    Functions: %d, Dangerous calls: %d\n", nf, ndc);
+            ast_free(actx);
+        }
+
+        error_count = ast_total;
+        if (error_count > 0) {
+            for (i = 0; i < error_count; i++)
+                generate_fix_suggestion(&errors[i]);
+            print_summary(&colors, &result, error_count, errors);
+            return EXIT_ERRORS_FOUND;
+        }
+        print_colored(&colors, colors.green, "[OK] ");
+        printf("No AST-level issues found\n");
         return EXIT_CLEAN;
     }
 
