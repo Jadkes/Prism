@@ -2068,7 +2068,11 @@ void print_usage(const char *prog_name, const ColorCodes *colors)
     printf("  --quick        Quick check: -Wall -Werror, no sanitizers (default)\n");
     printf("  --full         Full analysis with ASan+UBSan sanitizers\n");
     printf("  --max          Run ALL analysis modes sequentially\n");
-    printf("  --ultra        Run ALL modes in parallel (uses all CPUs, very slow)\n");
+    printf("  --ultra        Compile 11 binary variants (O0/O1/O2/O3/gcov/libfuzzer),\n");
+    printf("                 run 24+ analysis passes in parallel via fork():\n");
+    printf("                 ASan@O0/O1/O2/O3 + UBSan + TSan + Valgrind +\n");
+    printf("                 clang-tidy + -fanalyzer + fuzz + rerun + gcov +\n");
+    printf("                 libfuzzer + danger scan + resource leak + GDB\n");
     printf("  --tsan         Use ThreadSanitizer to detect data races\n");
     printf("  --analyzer     Use GCC static analyzer (-fanalyzer)\n");
     printf("  --clang-tidy   Run clang-tidy static analysis\n");
@@ -2103,12 +2107,13 @@ void print_usage(const char *prog_name, const ColorCodes *colors)
     printf("  --timeout=N    Set execution timeout in seconds (default: %d)\n",
            DEFAULT_TIMEOUT_SEC);
     printf("  --jobs=N, -j N Process N files in parallel (default: nproc)\n");
-    printf("                 --ultra forces --jobs=nproc automatically\n\n");
+    printf("                 --ultra forces --jobs=nproc, compiles 11 binaries,\n");
+    printf("                 runs 24 analysis passes concurrently (not sequential)\n\n");
 
     print_colored(colors, colors->bold, "Examples:\n");
     printf("  %s main.c                          Fast basic check (default)\n", prog_name);
     printf("  %s --full main.c                   Full ASan+UBSan analysis\n", prog_name);
-    printf("  %s --ultra main.c                  Max analysis (slow)\n", prog_name);
+    printf("  %s --ultra main.c                  Ultimate analysis (11 bins, 24 passes)\n", prog_name);
     printf("  %s --git-diff main.c               Only check changed files\n", prog_name);
     printf("  %s --install-hook                  Install pre-commit hook\n", prog_name);
     printf("  %s main.c utils.c helper.c         Multi-file project\n\n", prog_name);
