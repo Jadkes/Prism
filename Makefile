@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -Wpedantic -O2 -Wno-format-truncation
 LDFLAGS = -lclang
 TARGET = c_tester
-OBJS = c_tester.o ast_backend.o annotation.o check_engine.o
+OBJS = c_tester.o ast_backend.o annotation.o check_engine.o sym_exec.o
 
 BAD_CODES_DIR = bad_codes
 HOOKS_DIR = hooks
@@ -25,6 +25,9 @@ annotation.o: annotation.c annotation.h c_tester.h
 
 check_engine.o: check_engine.c check_engine.h c_tester.h ast_backend.h annotation.h
 	$(CC) $(CFLAGS) -c -o check_engine.o check_engine.c
+
+sym_exec.o: sym_exec.c sym_exec.h c_tester.h ast_backend.h
+	$(CC) $(CFLAGS) -c -o sym_exec.o sym_exec.c
 
 clean:
 	rm -f $(TARGET)

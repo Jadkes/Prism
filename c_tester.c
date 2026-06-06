@@ -17,6 +17,7 @@
 #include "ast_backend.h"
 #include "check_engine.h"
 #include "annotation.h"
+#include "sym_exec.h"
 
 /*
  * compile_with_sanitizers - Compile source files with ASan and UBSan
