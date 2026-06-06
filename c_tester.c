@@ -88,8 +88,9 @@ int compile_with_tsan(const char **sources, int source_count,
     size_t pos;
 
     pos = snprintf(cmd, sizeof(cmd),
-                   "gcc -fsanitize=thread -g -fno-omit-frame-pointer "
-                   "-o '%s'", binary);
+                   "gcc -fsanitize=thread -O2 -g -fno-omit-frame-pointer "
+                   "-Wuninitialized -Wstrict-aliasing=2 -Wformat-overflow=2 "
+                   "-Wstringop-overflow=2 -o '%s'", binary);
 
     for (i = 0; i < source_count && pos < sizeof(cmd) - 4; i++) {
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
@@ -134,7 +135,55 @@ int compile_fallback(const char **sources, int source_count,
     size_t pos;
 
     pos = snprintf(cmd, sizeof(cmd),
-                   "gcc -Wall -Wextra -g -o '%s'", binary);
+                   "gcc -Wall -Wextra -O2 -g "
+                   "-Wuninitialized -Wstrict-aliasing=2 -Wformat-overflow=2 "
+                   "-Wstringop-overflow=2 -o '%s'", binary);
+
+    for (i = 0; i < source_count && pos < sizeof(cmd) - 4; i++) {
+        pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
+    }
+
+    pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
+
+    pipe = popen(cmd, "r");
+    if (!pipe) {
+        snprintf(output, output_size, "Failed to start compiler");
+        return -1;
+    }
+
+    bytes_read = fread(output, 1, output_size - 1, pipe);
+    output[bytes_read] = '\0';
+
+    return pclose(pipe);
+}
+
+/*
+ * compile_for_valgrind - Compile for Valgrind analysis
+ *
+ * WHY: Valgrind needs unoptimized code (-Og) to detect memory bugs.
+ *      -O2 optimization can eliminate dead code (unused malloc results),
+ *      making memory leaks invisible to Valgrind.
+ *
+ * @param sources - Array of paths to C source files
+ * @param source_count - Number of source files
+ * @param binary - Output binary path
+ * @param output - Buffer for compiler output
+ * @param output_size - Size of output buffer
+ * @return 0 on success, non-zero on failure
+ */
+int compile_for_valgrind(const char **sources, int source_count,
+                         const char *binary, char *output, size_t output_size)
+{
+    char cmd[MAX_PATH_LEN * 8 + 64];
+    FILE *pipe;
+    size_t bytes_read;
+    int i;
+    size_t pos;
+
+    pos = snprintf(cmd, sizeof(cmd),
+                   "gcc -Wall -Wextra -O0 -g -fno-omit-frame-pointer "
+                   "-Wuninitialized -Wstrict-aliasing=2 -Wformat-overflow=2 "
+                   "-Wstringop-overflow=2 -o '%s'", binary);
 
     for (i = 0; i < source_count && pos < sizeof(cmd) - 4; i++) {
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
@@ -315,7 +364,9 @@ int compile_with_analyzer(const char **sources, int source_count,
     size_t pos;
 
     pos = snprintf(cmd, sizeof(cmd),
-                   "gcc -fanalyzer -g -o '%s'", binary);
+                   "gcc -fanalyzer -O2 -g "
+                   "-Wuninitialized -Wstrict-aliasing=2 -Wformat-overflow=2 "
+                   "-Wstringop-overflow=2 -o '%s'", binary);
 
     for (i = 0; i < source_count && pos < sizeof(cmd) - 4; i++) {
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
@@ -333,6 +384,58 @@ int compile_with_analyzer(const char **sources, int source_count,
     output[bytes_read] = '\0';
 
     return pclose(pipe);
+}
+
+/*
+ * compile_with_clang_tidy - Run clang-tidy static analysis on source files
+ *
+ * WHY: clang-tidy performs static analysis without compiling or running
+ *      the code. It catches bugprone patterns, concurrency issues,
+ *      cert security issues, and clang-analyzer checks at source level.
+ *      Unlike -fanalyzer, it has a broader set of checks.
+ *
+ * @param sources - Array of paths to C/C++ source files
+ * @param source_count - Number of source files
+ * @param output - Buffer for clang-tidy output
+ * @param output_size - Size of output buffer
+ * @return 0 if clang-tidy ran successfully, non-zero on failure
+ */
+int compile_with_clang_tidy(const char **sources, int source_count,
+                            char *output, size_t output_size)
+{
+    char cmd[MAX_PATH_LEN * 8 + 256];
+    FILE *pipe;
+    size_t bytes_read;
+    int i;
+    size_t pos;
+
+    /* Build clang-tidy command with checks and quiet mode */
+    pos = snprintf(cmd, sizeof(cmd),
+                   "clang-tidy --checks='bugprone-*,concurrency-*,nullability-*,cert-*,clang-analyzer-*' --quiet");
+
+    for (i = 0; i < source_count && pos < sizeof(cmd) - 4; i++) {
+        pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
+    }
+
+    /* Add -- to separate clang-tidy args from compiler args */
+    pos += snprintf(cmd + pos, sizeof(cmd) - pos, " -- -Wall -Wextra -O2 2>&1");
+
+    pipe = popen(cmd, "r");
+    if (!pipe) {
+        snprintf(output, output_size, "Failed to start clang-tidy");
+        return -1;
+    }
+
+    bytes_read = fread(output, 1, output_size - 1, pipe);
+    output[bytes_read] = '\0';
+
+    int clang_tidy_status = pclose(pipe);
+    /* clang-tidy returns diagnostic count as exit code (0 = clean, N = N issues).
+     * We want to parse the output regardless. Only signal failure if the
+     * pipe itself errored (pclose returns -1) or the tool couldn't execute. */
+    if (clang_tidy_status == -1)
+        return -1;
+    return 0;
 }
 
 /*
@@ -393,7 +496,9 @@ int compile_cpp_with_analyzer(const char **sources, int source_count,
     size_t pos;
 
     pos = snprintf(cmd, sizeof(cmd),
-                   "g++ -fanalyzer -g -o '%s'", binary);
+                   "g++ -fanalyzer -O2 -g "
+                   "-Wuninitialized -Wstrict-aliasing=2 -Wformat-overflow=2 "
+                   "-Wstringop-overflow=2 -o '%s'", binary);
 
     for (i = 0; i < source_count && pos < sizeof(cmd) - 4; i++) {
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
@@ -530,20 +635,28 @@ int run_with_timeout(const char *binary, char *const argv[],
         }
 
         if (FD_ISSET(stdout_pipe[0], &read_fds)) {
-            ssize_t n = read(stdout_pipe[0], output + out_pos,
-                             output_size - out_pos - 1);
-            if (n <= 0)
+            if (output_size > 0 && out_pos < output_size - 1) {
+                ssize_t n = read(stdout_pipe[0], output + out_pos,
+                                 output_size - out_pos - 1);
+                if (n <= 0)
+                    stdout_eof = 1;
+                else
+                    out_pos += n;
+            } else {
                 stdout_eof = 1;
-            else
-                out_pos += n;
+            }
         }
         if (FD_ISSET(stderr_pipe[0], &read_fds)) {
-            ssize_t n = read(stderr_pipe[0], error_output + err_pos,
-                             error_size - err_pos - 1);
-            if (n <= 0)
+            if (error_size > 0 && err_pos < error_size - 1) {
+                ssize_t n = read(stderr_pipe[0], error_output + err_pos,
+                                 error_size - err_pos - 1);
+                if (n <= 0)
+                    stderr_eof = 1;
+                else
+                    err_pos += n;
+            } else {
                 stderr_eof = 1;
-            else
-                err_pos += n;
+            }
         }
     }
 
@@ -873,6 +986,15 @@ ERR_UNINIT_VAR, 1 },
     { "Uninitialised",          "Uninitialized Value",
       "An uninitialized value was used in a way that affects program behavior. Initialize all variables before use.",
       ERR_UNINIT_VAR, 1 },
+    { "definitely lost",        "Memory Leak",
+      "Valgrind detected a definite memory leak. Memory was allocated but never freed. Ensure all malloc/calloc/realloc calls have matching free calls.",
+      ERR_MEMORY_LEAK, 2 },
+    { "indirectly lost",        "Memory Leak (Indirect)",
+      "Valgrind detected an indirect memory leak. This memory is only reachable through other leaked blocks. Fix the parent leak first.",
+      ERR_MEMORY_LEAK, 2 },
+    { "possibly lost",          "Memory Leak (Possible)",
+      "Valgrind detected a possible memory leak. Pointer arithmetic may have lost track of allocated memory. Review pointer manipulations.",
+      ERR_MEMORY_LEAK, 1 },
     /* GCC -fanalyzer patterns */
     { "stack-based buffer overflow", "Buffer Overflow",
       "Writing beyond allocated stack memory. Check array bounds and buffer sizes.",
@@ -886,6 +1008,43 @@ ERR_UNINIT_VAR, 1 },
     { "double free",            "Double Free",
       "Memory freed twice. Set pointer to NULL after free.",
       ERR_USE_AFTER_FREE, 2 },
+    /* clang-tidy specific patterns - specific before generic */
+    { "clang-analyzer-unix.Stream", "Resource Leak",
+      "clang-tidy detected an opened stream/file that is never closed. Ensure all fopen/fclose pairs are matched, even on error paths.",
+      ERR_MEMORY_LEAK, 2 },
+    { "clang-analyzer-unix.Malloc", "Memory Leak",
+      "clang-tidy (clang-analyzer) detected a memory leak. Free all allocated memory or use smart pointers.",
+      ERR_MEMORY_LEAK, 2 },
+    { "clang-analyzer-core.NullDereference", "NULL Pointer Dereference",
+      "clang-tidy (clang-analyzer) detected a null pointer dereference. Add null checks before dereferencing pointers.",
+      ERR_NULL_DEREF, 2 },
+    { "clang-analyzer-deadcode.DeadStores", "Dead Store",
+      "clang-tidy detected a value that is stored but never read. Remove the unused assignment or use the value.",
+      ERR_UNKNOWN, 1 },
+    { "clang-analyzer-unix.cstring.NullArg", "NULL Argument",
+      "clang-tidy detected a NULL argument passed to a function that doesn't accept it. Check arguments before calling.",
+      ERR_NULL_DEREF, 2 },
+    { "clang-analyzer-security", "Security Issue",
+      "clang-tidy detected a potential security vulnerability. Review buffer bounds, format strings, and input validation.",
+      ERR_UNKNOWN, 2 },
+    { "cert-err",                 "Ignored Return Value",
+      "clang-tidy detected a function return value that is ignored. Check return values for errors, especially for I/O operations.",
+      ERR_UNKNOWN, 1 },
+    { "cert-",                    "Security Issue",
+      "clang-tidy detected a security issue (CERT rule). Review the CERT secure coding standard and apply the fix.",
+      ERR_UNKNOWN, 2 },
+    { "bugprone-narrowing",       "Narrowing Conversion",
+      "clang-tidy detected a narrowing conversion that may lose data. Use explicit casts or change variable types.",
+      ERR_UNKNOWN, 1 },
+    { "bugprone-",               "Bugprone Issue",
+      "clang-tidy detected a bugprone pattern. Review the code for potential bugs and apply the suggested fix.",
+      ERR_UNKNOWN, 1 },
+    { "concurrency-",             "Concurrency Issue",
+      "clang-tidy detected a concurrency problem. Use proper synchronization (mutexes, atomics) for shared data.",
+      ERR_DATA_RACE, 2 },
+    { "nullability-",             "Nullability Issue",
+      "clang-tidy detected a nullability problem. Check pointer nullability annotations and add null checks.",
+      ERR_NULL_DEREF, 2 },
 };
 
 static const int num_patterns = sizeof(error_patterns) / sizeof(error_patterns[0]);
@@ -1358,6 +1517,425 @@ int generate_html_report(const char *html_path, const char **source_files,
 }
 
 /*
+ * merge_analysis_error - Add or update error with location-aware dedup
+ *
+ * WHY: Multiple analysis passes may find the same error or different errors
+ *      of the same type. Dedup by (type + file + line) so distinct errors
+ *      at different locations are all reported, while the same error found
+ *      by multiple modes is merged with combined mode tracking.
+ *
+ * @param errors - Global error array
+ * @param total_errors - Current count in errors[]
+ * @param max_errors - Capacity of errors[]
+ * @param new_error - The candidate error to add
+ * @param error_modes - Mode bitmask array (parallel to errors[])
+ * @param mode_bit - Bit for the current analysis mode
+ * @return New total_errors count
+ */
+static int merge_analysis_error(DetectedError *errors, int total_errors, int max_errors,
+                                 const DetectedError *new_error,
+                                 unsigned int *error_modes, unsigned int mode_bit)
+{
+    for (int j = 0; j < total_errors; j++) {
+        if (errors[j].type != new_error->type)
+            continue;
+        /* If both have source info, compare file + line */
+        if (errors[j].has_source && new_error->has_source) {
+            if (errors[j].source_line == new_error->source_line &&
+                strcmp(errors[j].source_file, new_error->source_file) == 0) {
+                error_modes[j] |= mode_bit;
+                return total_errors;
+            }
+        } else if (!errors[j].has_source && !new_error->has_source) {
+            /* Neither has source info — treat as same error */
+            error_modes[j] |= mode_bit;
+            return total_errors;
+        }
+        /* One has source info, the other doesn't — treat as distinct */
+    }
+
+    /* New unique error */
+    if (total_errors < max_errors) {
+        errors[total_errors] = *new_error;
+        error_modes[total_errors] = mode_bit;
+        return total_errors + 1;
+    }
+    return total_errors;
+}
+
+/*
+ * run_max_analysis - Run ALL analysis modes and aggregate results
+ *
+ * WHY: Provides comprehensive analysis by running every detection mode
+ *      (sanitizers, warnings, analyzer, clang-tidy, valgrind, tsan)
+ *      and aggregating all unique errors with deduplication.
+ *
+ * @param sources - Array of paths to source files
+ * @param source_count - Number of source files
+ * @param errors - Output array for detected errors
+ * @param max_errors - Maximum number of errors to collect
+ * @param result - TestResult to populate with execution info
+ * @param timeout_sec - Maximum execution time in seconds
+ * @param colors - Color codes for output
+ * @return Number of unique errors found
+ */
+int run_max_analysis(const char **sources, int source_count,
+                     DetectedError *errors, int max_errors,
+                     TestResult *result, int timeout_sec,
+                     const ColorCodes *colors)
+{
+    char binary_path[MAX_PATH_LEN];
+    char temp_output[MAX_OUTPUT_SIZE];
+    int total_errors = 0;
+    /* Remove old seen_types bitset — replaced by merge_analysis_error below */
+    const char *mode_names[] = {"Sanitizers", "Compiler Warnings", "GCC Analyzer",
+                                "Clang-Tidy", "Valgrind", "ThreadSanitizer"};
+    unsigned int error_modes[32] = {0};
+    long cumulative_time_ms = 0;
+
+    generate_temp_path("c_tester", binary_path, sizeof(binary_path));
+    memset(result, 0, sizeof(TestResult));
+
+    printf("========================================\n");
+    print_colored(colors, colors->bold, "  MAX MODE - Full Analysis\n");
+    printf("========================================\n");
+    printf("Running 6 analysis passes...\n\n");
+
+    /* ------------------------------------------------------------------ */
+    /* Pass 1/6 — Sanitizers (ASan + UBSan)                                */
+    /* ------------------------------------------------------------------ */
+    printf("[1/6] Sanitizers (ASan+UBSan)...");
+    fflush(stdout);
+    memset(result->compiler_output, 0, sizeof(result->compiler_output));
+    if (compile_with_sanitizers(sources, source_count, binary_path,
+                                result->compiler_output,
+                                sizeof(result->compiler_output)) == 0) {
+        result->compilation_success = true;
+
+        setenv("ASAN_OPTIONS", "detect_leaks=1", 1);
+
+        struct timespec start, end;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        int bin_result = run_binary(binary_path, NULL,
+                                   result->runtime_output,
+                                   sizeof(result->runtime_output),
+                                   result->sanitizer_output,
+                                   sizeof(result->sanitizer_output),
+                                   timeout_sec, NULL);
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        long pass_time;
+        get_execution_time(&start, &end, &pass_time);
+        cumulative_time_ms += pass_time;
+
+        if (bin_result == -1) {
+            size_t slen = strlen(result->sanitizer_output);
+            snprintf(result->sanitizer_output + slen,
+                     sizeof(result->sanitizer_output) - slen,
+                     "\nExecution timeout after %d seconds", timeout_sec);
+        }
+
+        DetectedError temp_errors[32];
+        memset(temp_errors, 0, sizeof(temp_errors));
+        int count = parse_sanitizer_errors(result->sanitizer_output,
+                                            temp_errors, 32);
+
+        for (int i = 0; i < count && total_errors < max_errors; i++)
+            total_errors = merge_analysis_error(errors, total_errors, max_errors,
+                                                 &temp_errors[i], error_modes, 1u << 0);
+        printf(" DONE - %d errors\n", count);
+        cleanup_binary(binary_path);
+    } else {
+        printf(" COMPILE ERROR\n");
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Pass 2/6 — Compiler Warnings                                        */
+    /* ------------------------------------------------------------------ */
+    printf("[2/6] Compiler Warnings...");
+    fflush(stdout);
+    memset(temp_output, 0, sizeof(temp_output));
+    if (compile_for_warnings(sources, source_count, temp_output,
+                             sizeof(temp_output)) == 0) {
+        DetectedError temp_errors[32];
+        memset(temp_errors, 0, sizeof(temp_errors));
+        int count = 0;
+
+        if (temp_output[0] != '\0') {
+            char *line_start = temp_output;
+            char *line_end;
+            while (*line_start && count < 32) {
+                line_end = strchr(line_start, '\n');
+                if (line_end) *line_end = '\0';
+
+                if (string_contains(line_start, "warning:")) {
+                    int pattern_idx = classify_error(line_start);
+                    if (pattern_idx >= 0) {
+                        temp_errors[count].type = error_patterns[pattern_idx].type;
+                        snprintf(temp_errors[count].title,
+                                 sizeof(temp_errors[count].title),
+                                 "%s", error_patterns[pattern_idx].title);
+                        snprintf(temp_errors[count].fix_suggestion,
+                                 sizeof(temp_errors[count].fix_suggestion),
+                                 "%s", error_patterns[pattern_idx].fix);
+                        temp_errors[count].severity = error_patterns[pattern_idx].severity;
+                        temp_errors[count].has_source = false;
+                        count++;
+                    } else {
+                        /* Unmatched warning - create generic error */
+                        if (count < 32) {
+                            temp_errors[count].type = ERR_UNKNOWN;
+                            snprintf(temp_errors[count].title,
+                                     sizeof(temp_errors[count].title),
+                                     "Compiler Warning");
+                            snprintf(temp_errors[count].fix_suggestion,
+                                     sizeof(temp_errors[count].fix_suggestion),
+                                     "Compiler detected: %.200s", line_start);
+                            temp_errors[count].severity = 1;
+                            temp_errors[count].has_source = false;
+                            count++;
+                        }
+                    }
+                }
+
+                if (line_end) {
+                    *line_end = '\n';
+                    line_start = line_end + 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        for (int i = 0; i < count && total_errors < max_errors; i++)
+            total_errors = merge_analysis_error(errors, total_errors, max_errors,
+                                                 &temp_errors[i], error_modes, 1u << 1);
+        printf(" DONE - %d errors\n", count);
+    } else {
+        printf(" FAILED\n");
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Pass 3/6 — GCC Analyzer (-fanalyzer)                                */
+    /* ------------------------------------------------------------------ */
+    printf("[3/6] GCC Analyzer...");
+    fflush(stdout);
+    memset(temp_output, 0, sizeof(temp_output));
+    if (compile_with_analyzer(sources, source_count, binary_path,
+                              temp_output, sizeof(temp_output)) == 0) {
+        DetectedError temp_errors[32];
+        memset(temp_errors, 0, sizeof(temp_errors));
+        int count = parse_sanitizer_errors(temp_output, temp_errors, 32);
+
+        for (int i = 0; i < count && total_errors < max_errors; i++)
+            total_errors = merge_analysis_error(errors, total_errors, max_errors,
+                                                 &temp_errors[i], error_modes, 1u << 2);
+        printf(" DONE - %d errors\n", count);
+        /* Clean up the binary produced by compile_with_analyzer */
+        cleanup_binary(binary_path);
+    } else {
+        printf(" FAILED\n");
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Pass 4/6 — Clang-Tidy                                               */
+    /* ------------------------------------------------------------------ */
+    printf("[4/6] Clang-Tidy...");
+    fflush(stdout);
+    memset(temp_output, 0, sizeof(temp_output));
+    if (compile_with_clang_tidy(sources, source_count, temp_output,
+                                sizeof(temp_output)) == 0) {
+        DetectedError temp_errors[32];
+        memset(temp_errors, 0, sizeof(temp_errors));
+        int count = 0;
+
+        if (temp_output[0] != '\0') {
+            char *line_start = temp_output;
+            char *line_end;
+            while (*line_start && count < 32) {
+                line_end = strchr(line_start, '\n');
+                if (line_end) *line_end = '\0';
+
+                if (string_contains(line_start, "warning:") ||
+                    string_contains(line_start, "error:")) {
+                    int pattern_idx = classify_error(line_start);
+                    if (pattern_idx >= 0) {
+                        temp_errors[count].type = error_patterns[pattern_idx].type;
+                        snprintf(temp_errors[count].title,
+                                 sizeof(temp_errors[count].title),
+                                 "%s", error_patterns[pattern_idx].title);
+                        snprintf(temp_errors[count].fix_suggestion,
+                                 sizeof(temp_errors[count].fix_suggestion),
+                                 "%s", error_patterns[pattern_idx].fix);
+                        temp_errors[count].severity = error_patterns[pattern_idx].severity;
+                        temp_errors[count].has_source = false;
+                        count++;
+                    } else {
+                        /* Unmatched clang-tidy warning/error — create generic entry */
+                        if (count < 32) {
+                            temp_errors[count].type = ERR_UNKNOWN;
+                            if (string_contains(line_start, "error:"))
+                                snprintf(temp_errors[count].title,
+                                         sizeof(temp_errors[count].title),
+                                         "Clang-Tidy Error");
+                            else
+                                snprintf(temp_errors[count].title,
+                                         sizeof(temp_errors[count].title),
+                                         "Clang-Tidy Warning");
+                            snprintf(temp_errors[count].fix_suggestion,
+                                     sizeof(temp_errors[count].fix_suggestion),
+                                     "clang-tidy reported: %.200s", line_start);
+                            temp_errors[count].severity = 1;
+                            temp_errors[count].has_source = false;
+                            count++;
+                        }
+                    }
+                }
+
+                if (line_end) {
+                    *line_end = '\n';
+                    line_start = line_end + 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        for (int i = 0; i < count && total_errors < max_errors; i++)
+            total_errors = merge_analysis_error(errors, total_errors, max_errors,
+                                                 &temp_errors[i], error_modes, 1u << 3);
+
+        printf(" DONE - %d errors\n", count);
+    } else {
+        printf(" FAILED\n");
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Pass 5/6 — Valgrind                                                 */
+    /* ------------------------------------------------------------------ */
+    printf("[5/6] Valgrind...");
+    fflush(stdout);
+
+    /* Check if valgrind is available before attempting */
+    if (system("which valgrind > /dev/null 2>&1") != 0) {
+        printf(" SKIPPED (valgrind not found)\n");
+    } else {
+        memset(result->compiler_output, 0, sizeof(result->compiler_output));
+        if (compile_for_valgrind(sources, source_count, binary_path,
+                             result->compiler_output,
+                             sizeof(result->compiler_output)) == 0) {
+            struct timespec start, end;
+            clock_gettime(CLOCK_MONOTONIC, &start);
+            int vg_result = run_with_valgrind(binary_path, NULL, 0,
+                              result->sanitizer_output,
+                              sizeof(result->sanitizer_output),
+                              timeout_sec, NULL);
+            clock_gettime(CLOCK_MONOTONIC, &end);
+            long pass_time;
+            get_execution_time(&start, &end, &pass_time);
+            cumulative_time_ms += pass_time;
+
+            if (vg_result == -1) {
+                size_t slen = strlen(result->sanitizer_output);
+                snprintf(result->sanitizer_output + slen,
+                         sizeof(result->sanitizer_output) - slen,
+                         "\nValgrind execution timeout after %d seconds", timeout_sec);
+            }
+
+            DetectedError temp_errors[32];
+            memset(temp_errors, 0, sizeof(temp_errors));
+            int count = parse_sanitizer_errors(result->sanitizer_output,
+                                                temp_errors, 32);
+
+            for (int i = 0; i < count && total_errors < max_errors; i++)
+                total_errors = merge_analysis_error(errors, total_errors, max_errors,
+                                                     &temp_errors[i], error_modes, 1u << 4);
+            printf(" DONE - %d errors\n", count);
+            cleanup_binary(binary_path);
+        } else {
+            printf(" COMPILE ERROR\n");
+        }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Pass 6/6 — ThreadSanitizer                                          */
+    /* ------------------------------------------------------------------ */
+    printf("[6/6] ThreadSanitizer...");
+    fflush(stdout);
+    memset(result->compiler_output, 0, sizeof(result->compiler_output));
+    if (compile_with_tsan(sources, source_count, binary_path,
+                          result->compiler_output,
+                          sizeof(result->compiler_output)) == 0) {
+        struct timespec start, end;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+
+        setenv("ASAN_OPTIONS", "detect_leaks=1", 1);
+
+        int bin_result = run_binary(binary_path, NULL,
+                                  result->runtime_output,
+                                  sizeof(result->runtime_output),
+                                  result->sanitizer_output,
+                                  sizeof(result->sanitizer_output),
+                                  timeout_sec, NULL);
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        long pass_time;
+        get_execution_time(&start, &end, &pass_time);
+        cumulative_time_ms += pass_time;
+
+        if (bin_result == -1) {
+            size_t slen = strlen(result->sanitizer_output);
+            snprintf(result->sanitizer_output + slen,
+                     sizeof(result->sanitizer_output) - slen,
+                     "\nExecution timeout after %d seconds", timeout_sec);
+        }
+
+        DetectedError temp_errors[32];
+        memset(temp_errors, 0, sizeof(temp_errors));
+        int count = parse_sanitizer_errors(result->sanitizer_output,
+                                            temp_errors, 32);
+
+        for (int i = 0; i < count && total_errors < max_errors; i++)
+            total_errors = merge_analysis_error(errors, total_errors, max_errors,
+                                                 &temp_errors[i], error_modes, 1u << 5);
+        printf(" DONE - %d errors\n", count);
+        cleanup_binary(binary_path);
+    } else {
+        printf(" COMPILE ERROR\n");
+    }
+
+    /* Store cumulative time for display */
+    result->execution_time_ms = cumulative_time_ms;
+
+    printf("\n========================================\n");
+    print_colored(colors, colors->bold, "  RESULTS - %d unique errors found\n",
+                 total_errors);
+    printf("========================================\n");
+
+    for (int i = 0; i < total_errors; i++) {
+        generate_fix_suggestion(&errors[i]);
+        print_colored(colors, colors->red, "[ERROR] %s (found by: ",
+                     errors[i].title);
+        bool first = true;
+        for (int m = 0; m < 6; m++) {
+            if (error_modes[i] & (1u << m)) {
+                if (!first) printf(", ");
+                printf("%s", mode_names[m]);
+                first = false;
+            }
+        }
+        printf(")\n");
+        print_colored(colors, colors->yellow, "  Fix: ");
+        printf("%s\n\n", errors[i].fix_suggestion);
+    }
+
+    if (total_errors == 0) {
+        print_colored(colors, colors->green, "[OK] ");
+        printf("No errors detected - clean run\n");
+    }
+
+    return total_errors;
+}
+
+/*
  * print_usage - Print comprehensive help message and exit
  *
  * WHY: Users need clear documentation of available options and examples
@@ -1375,8 +1953,10 @@ void print_usage(const char *prog_name, const ColorCodes *colors)
     printf("%s [options] <source.c> [source2.c ...]\n\n", prog_name);
 
     print_colored(colors, colors->bold, "Analysis:\n");
+    printf("  --max          Run ALL analysis modes (slow but thorough)\n");
     printf("  --tsan         Use ThreadSanitizer to detect data races\n");
     printf("  --analyzer     Use GCC static analyzer (-fanalyzer)\n");
+    printf("  --clang-tidy   Run clang-tidy static analysis\n");
     printf("  --valgrind     Run under Valgrind for deep memory analysis\n");
     printf("  --project=<file>   Use compile flags from compile_commands.json\n\n");
 
@@ -1507,6 +2087,7 @@ int main(int argc, char *argv[])
     ColorCodes colors;
     TestResult result;
     DetectedError errors[32];
+    memset(errors, 0, sizeof(errors));
     char binary_path[MAX_PATH_LEN];
     const char *source_files[32];
     int source_count = 0;
@@ -1514,7 +2095,9 @@ int main(int argc, char *argv[])
     bool use_color = true;
     bool use_tsan = false;
     bool use_analyzer = false;
+    bool use_clang_tidy = false;
     bool use_valgrind = false;
+    bool use_max = false;
     char project_json[MAX_PATH_LEN] = {0};
     const char *html_path = NULL;
     int timeout_sec = DEFAULT_TIMEOUT_SEC;
@@ -1533,9 +2116,9 @@ int main(int argc, char *argv[])
             if (timeout_sec <= 0)
                 timeout_sec = DEFAULT_TIMEOUT_SEC;
         } else if (strncmp(argv[i], "--jobs=", 8) == 0) {
-            fprintf(stderr, "[debug] Matched --jobs= at argv[%d]='%s'\n", i, argv[i]);
+            /* Matched --jobs= at argv[i] */
             jobs = atoi(argv[i] + 8);
-            fprintf(stderr, "[debug] After parsing --jobs=: jobs=%d\n", jobs);
+            /* After parsing --jobs= */
             if (jobs < 1) jobs = 1;
             if (jobs > 8) jobs = 8;
         } else if (strcmp(argv[i], "--jobs") == 0 && i + 1 < argc) {
@@ -1553,8 +2136,12 @@ int main(int argc, char *argv[])
             use_tsan = true;
         } else if (strcmp(argv[i], "--analyzer") == 0) {
             use_analyzer = true;
+        } else if (strcmp(argv[i], "--clang-tidy") == 0) {
+            use_clang_tidy = true;
         } else if (strcmp(argv[i], "--valgrind") == 0) {
             use_valgrind = true;
+        } else if (strcmp(argv[i], "--max") == 0) {
+            use_max = true;
         } else if (strncmp(argv[i], "--project=", 10) == 0) {
             strncpy(project_json, argv[i] + 10, sizeof(project_json) - 1);
             project_json[sizeof(project_json) - 1] = '\0';
@@ -1598,7 +2185,7 @@ int main(int argc, char *argv[])
     }
 
     /* Parallel processing with fork() + waitpid() */
-    fprintf(stderr, "[debug] Checking parallel: jobs=%d, source_count=%d\n", jobs, source_count);
+    /* Checking parallel mode availability */
     if (jobs > 1 && source_count > 1) {
         int active_children = 0;
         int total_errors = 0;
@@ -1636,7 +2223,9 @@ int main(int argc, char *argv[])
                 if (keep_binary) child_argv[arg_idx++] = "--keep";
                 child_argv[arg_idx++] = timeout_str;
                 if (use_tsan) child_argv[arg_idx++] = "--tsan";
+                if (use_clang_tidy) child_argv[arg_idx++] = "--clang-tidy";
                 if (use_valgrind) child_argv[arg_idx++] = "--valgrind";
+                if (use_max) child_argv[arg_idx++] = "--max";
                 if (project_json[0]) {
                     snprintf(project_str, sizeof(project_str), "--project=%s", project_json);
                     child_argv[arg_idx++] = project_str;
@@ -1673,6 +2262,20 @@ int main(int argc, char *argv[])
     /* Single-file or jobs=1 processing */
     print_banner(&colors, source_files, source_count);
 
+    if (use_max) {
+        error_count = run_max_analysis(source_files, source_count,
+                                       errors, 32, &result,
+                                       timeout_sec, &colors);
+        if (html_path && html_path[0] != '\0') {
+            if (generate_html_report(html_path, source_files, source_count,
+                                      &result, errors, error_count) == 0) {
+                print_colored(&colors, colors.green, "[HTML] ");
+                printf("Report saved to: %s\n", html_path);
+            }
+        }
+        return error_count > 0 ? EXIT_ERRORS_FOUND : EXIT_CLEAN;
+    }
+
     generate_temp_path("c_tester", binary_path, sizeof(binary_path));
 
     memset(&result, 0, sizeof(result));
@@ -1700,9 +2303,9 @@ int main(int argc, char *argv[])
 
     if (!result.compilation_success) {
         if (use_valgrind) {
-            if (compile_fallback(source_files, source_count, binary_path,
-                                result.compiler_output,
-                                sizeof(result.compiler_output)) == 0) {
+            if (compile_for_valgrind(source_files, source_count, binary_path,
+                                    result.compiler_output,
+                                    sizeof(result.compiler_output)) == 0) {
                 result.compilation_success = true;
             }
         } else if (is_cpp_file(source_files[0])) {
@@ -1741,9 +2344,15 @@ int main(int argc, char *argv[])
                     result.compilation_success = true;
                 }
             } else if (compile_with_analyzer(source_files, source_count,
-                                           binary_path,
-                                           result.compiler_output,
-                                           sizeof(result.compiler_output)) == 0) {
+                                            binary_path,
+                                            result.compiler_output,
+                                            sizeof(result.compiler_output)) == 0) {
+                result.compilation_success = true;
+            }
+        } else if (use_clang_tidy) {
+            if (compile_with_clang_tidy(source_files, source_count,
+                                       result.compiler_output,
+                                       sizeof(result.compiler_output)) == 0) {
                 result.compilation_success = true;
             }
         } else {
@@ -1817,12 +2426,37 @@ int main(int argc, char *argv[])
                                                    32 - error_count);
     error_count += sanitizer_count;
 
-    if (error_count == 0 && !use_valgrind &&
+    if (error_count == 0 &&
         string_contains(result.compiler_output, "warning:")) {
         error_count = 1;
-        if (string_contains(result.compiler_output, "uninitialized"))
+        /* Try to classify using error_patterns (catches clang-tidy checks) */
+        char *line_start = result.compiler_output;
+        char *line_end;
+        int pattern_idx = -1;
+        while (*line_start && pattern_idx == -1) {
+            line_end = strchr(line_start, '\n');
+            if (line_end) *line_end = '\0';
+            if (string_contains(line_start, "warning:")) {
+                pattern_idx = classify_error(line_start);
+            }
+            if (line_end) {
+                *line_end = '\n';
+                line_start = line_end + 1;
+            } else {
+                break;
+            }
+        }
+        if (pattern_idx >= 0) {
+            errors[0].type = error_patterns[pattern_idx].type;
+            snprintf(errors[0].title, sizeof(errors[0].title),
+                     "%s", error_patterns[pattern_idx].title);
+            snprintf(errors[0].fix_suggestion, sizeof(errors[0].fix_suggestion),
+                     "%s", error_patterns[pattern_idx].fix);
+            errors[0].severity = error_patterns[pattern_idx].severity;
+            errors[0].has_source = false;
+        } else if (string_contains(result.compiler_output, "uninitialized")) {
             errors[0].type = ERR_UNINIT_VAR;
-        else if (string_contains(result.compiler_output, "strict-aliasing"))
+        } else if (string_contains(result.compiler_output, "strict-aliasing"))
             errors[0].type = ERR_UNKNOWN;
         else if (string_contains(result.compiler_output, "format-overflow"))
             errors[0].type = ERR_BUFFER_OVERFLOW;
@@ -1838,13 +2472,17 @@ int main(int argc, char *argv[])
         if (errors[0].title[0] == '\0')
             snprintf(errors[0].title, sizeof(errors[0].title),
                      "%s", get_error_name(errors[0].type));
-        char warning_excerpt[512];
-        strncpy(warning_excerpt, result.compiler_output, sizeof(warning_excerpt) - 1);
-        warning_excerpt[sizeof(warning_excerpt) - 1] = '\0';
-        snprintf(errors[0].fix_suggestion, sizeof(errors[0].fix_suggestion),
-                 "Compiler detected: %s", warning_excerpt);
-        errors[0].severity = 1;
-        errors[0].has_source = false;
+        /* Only overwrite fix_suggestion/severity/has_source when we didn't match a
+         * known error pattern — otherwise the pattern's fix is more useful. */
+        if (pattern_idx < 0) {
+            char warning_excerpt[512];
+            strncpy(warning_excerpt, result.compiler_output, sizeof(warning_excerpt) - 1);
+            warning_excerpt[sizeof(warning_excerpt) - 1] = '\0';
+            snprintf(errors[0].fix_suggestion, sizeof(errors[0].fix_suggestion),
+                     "Compiler detected: %s", warning_excerpt);
+            errors[0].severity = 1;
+            errors[0].has_source = false;
+        }
     }
 
     if (error_count == 0 && result.exit_code == -1) {

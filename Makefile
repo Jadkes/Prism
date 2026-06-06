@@ -52,7 +52,7 @@ test: $(TARGET)
 	run_test "Infinite loop" "tests/infinite_loop.c" "timeout"; \
 	run_test "Syntax error" "tests/syntax_error.c" "COMPILE ERROR"; \
 	run_test "Data race (TSan)" "--tsan tests/data_race.c" "Data Race"; \
-	run_test "Lock order inversion" "--tsan tests/test_lock_order_inversion.c" "Lock Order"; \
+	run_test "Lock order inversion" "--tsan tests/test_lock_order_inversion.c" "Lock Order Inversion"; \
 	run_test "Signal unsafe" "--tsan tests/test_signal_unsafe.c" "No errors detected"; \
 	run_test "C++ vector overflow" "tests/cpp_vector_overflow.cpp" "Out of Range"; \
 	run_test "C++ bad alloc" "tests/test_cpp_bad_alloc.cpp" "COMPILE ERROR"; \

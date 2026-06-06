@@ -187,6 +187,23 @@ int compile_for_warnings(const char **sources, int source_count,
                          char *output, size_t output_size);
 
 /*
+ * compile_for_valgrind - Compile for Valgrind analysis (-O0 -g)
+ *
+ * WHY: Valgrind needs unoptimized code (-O0) to detect memory bugs.
+ *      -O2 optimization can eliminate dead code (unused malloc results),
+ *      making memory leaks invisible to Valgrind.
+ *
+ * @param sources - Array of paths to C source files
+ * @param source_count - Number of source files
+ * @param binary - Output binary path
+ * @param output - Buffer for compiler output
+ * @param output_size - Size of output buffer
+ * @return 0 on success, non-zero on failure
+ */
+int compile_for_valgrind(const char **sources, int source_count,
+                         const char *binary, char *output, size_t output_size);
+
+/*
  * compile_with_analyzer - Compile with GCC static analyzer (-fanalyzer)
  *
  * WHY: GCC 13+ has a built-in static analyzer that performs symbolic
@@ -202,8 +219,23 @@ int compile_for_warnings(const char **sources, int source_count,
  * @return 0 on success, non-zero on failure
  */
 int compile_with_analyzer(const char **sources, int source_count,
-                       const char *binary,
-                       char *output, size_t output_size);
+                        const char *binary,
+                        char *output, size_t output_size);
+
+/*
+ * compile_with_clang_tidy - Run clang-tidy static analysis
+ *
+ * WHY: clang-tidy catches bugprone patterns, concurrency issues,
+ *      cert security issues, and clang-analyzer checks at source level.
+ *
+ * @param sources - Array of paths to C/C++ source files
+ * @param source_count - Number of source files
+ * @param output - Buffer for clang-tidy output
+ * @param output_size - Size of output buffer
+ * @return 0 if clang-tidy ran successfully, non-zero on failure
+ */
+int compile_with_clang_tidy(const char **sources, int source_count,
+                            char *output, size_t output_size);
 
 /*
  * compile_cpp_with_analyzer - Compile C++ with GCC static analyzer (-fanalyzer)
@@ -455,6 +487,27 @@ void trim_whitespace(char *str);
 long get_file_size(const char *path);
 
 /*
+ * run_max_analysis - Run ALL analysis modes and aggregate results
+ *
+ * WHY: Provides comprehensive analysis by running every detection mode
+ *      (sanitizers, warnings, analyzer, clang-tidy, valgrind, tsan)
+ *      and aggregating all unique errors with deduplication.
+ *
+ * @param sources - Array of paths to source files
+ * @param source_count - Number of source files
+ * @param errors - Output array for detected errors
+ * @param max_errors - Maximum number of errors to collect
+ * @param result - TestResult to populate with execution info
+ * @param timeout_sec - Maximum execution time in seconds
+ * @param colors - Color codes for output
+ * @return Number of unique errors found
+ */
+int run_max_analysis(const char **sources, int source_count,
+                     DetectedError *errors, int max_errors,
+                     TestResult *result, int timeout_sec,
+                     const ColorCodes *colors);
+
+/*
  * generate_html_report - Write HTML report with error details
  *
  * WHY: Users need a shareable, styled report that shows errors,
@@ -470,9 +523,9 @@ long get_file_size(const char *path);
  * @return 0 on success, non-zero on failure
  */
 int generate_html_report(const char *html_path, const char **source_files,
-                         int source_count,
-                         const TestResult *result,
-                         const DetectedError *errors, int error_count);
+                          int source_count,
+                          const TestResult *result,
+                          const DetectedError *errors, int error_count);
 
 /*
  * get_execution_time - Calculate elapsed time in milliseconds

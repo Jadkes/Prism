@@ -11,6 +11,7 @@ if [ -z "$1" ]; then
     echo "  - --analyzer (GCC static)"
     echo "  - --valgrind (deep memory)"
     echo "  - --tsan (ThreadSanitizer)"
+    echo "  - --clang-tidy (clang-tidy static analysis)"
     echo ""
     echo "Examples:"
     echo "  $0 my_buggy.c"
@@ -32,76 +33,69 @@ echo ""
 echo "Testing: $FILE"
 echo ""
 
-# Default (ASan + UBSan)
-echo "========================================"
-echo "[1] DEFAULT (ASan + UBSan)"
-echo "========================================"
-OUTPUT=$($C_TESTER $FILE 2>&1)
-if echo "$OUTPUT" | grep -q "\[ERROR\]"; then
-    echo "$OUTPUT" | grep -E "^\[ERROR\]|\[OK\]" | head -5
-    echo "$OUTPUT" | grep -E "Fix:" | head -3
-else
-    echo "$OUTPUT" | grep -E "^\[OK\]|\[COMPILE"
+# Run a single test mode and print results
+# Returns 0 if errors found, 1 if clean
+run_test() {
+    local label="$1"
+    shift
+    local OUTPUT=$($C_TESTER $FILE "$@" --no-color 2>&1)
+
+    echo "========================================"
+    echo "$label"
+    echo "========================================"
+
+    if echo "$OUTPUT" | grep -qa "\[COMPILE ERROR\]"; then
+        echo "[COMPILE ERROR]"
+        echo "$OUTPUT" | sed -n '/\[COMPILE ERROR\]/{n;p;n;p;}' | head -3
+        return 0
+    elif echo "$OUTPUT" | grep -qa "\[ERROR\]"; then
+        echo "$OUTPUT" | grep -aE "^\[ERROR\]|\[OK\]" | head -5
+        echo "$OUTPUT" | grep -aE "Fix:" | head -3
+        return 0
+    else
+        echo "$OUTPUT" | grep -aE "^\[OK\]|\[COMPILE"
+        return 1
+    fi
+}
+
+DETECTION=""
+
+if run_test "[1] DEFAULT (ASan + UBSan)"; then
+    DETECTION="$DETECTION DEFAULT"
 fi
 echo ""
 
-# --analyzer
-echo "========================================"
-echo "[2] --ANALYZER (GCC static)"
-echo "========================================"
-OUTPUT=$($C_TESTER $FILE --analyzer 2>&1)
-if echo "$OUTPUT" | grep -q "\[ERROR\]"; then
-    echo "$OUTPUT" | grep -E "^\[ERROR\]|\[OK\]" | head -5
-    echo "$OUTPUT" | grep -E "Fix:" | head -3
-else
-    echo "$OUTPUT" | grep -E "^\[OK\]|\[COMPILE"
+if run_test "[2] --ANALYZER (GCC static)" --analyzer; then
+    DETECTION="$DETECTION --analyzer"
 fi
 echo ""
 
-# --valgrind
-echo "========================================"
-echo "[3] --VALGRIND (deep mem)"
-echo "========================================"
-OUTPUT=$($C_TESTER $FILE --valgrind 2>&1)
-if echo "$OUTPUT" | grep -q "\[ERROR\]"; then
-    echo "$OUTPUT" | grep -E "^\[ERROR\]|\[OK\]" | head -5
-    echo "$OUTPUT" | grep -E "Fix:" | head -3
-else
-    echo "$OUTPUT" | grep -E "^\[OK\]|\[COMPILE"
+if run_test "[3] --VALGRIND (deep mem)" --valgrind; then
+    DETECTION="$DETECTION --valgrind"
 fi
 echo ""
 
-# --tsan
-echo "========================================"
-echo "[4] --TSAN (ThreadSanitizer)"
-echo "========================================"
-OUTPUT=$($C_TESTER $FILE --tsan 2>&1)
-if echo "$OUTPUT" | grep -q "\[ERROR\]"; then
-    echo "$OUTPUT" | grep -E "^\[ERROR\]|\[OK\]" | head -5
-    echo "$OUTPUT" | grep -E "Fix:" | head -3
-else
-    echo "$OUTPUT" | grep -E "^\[OK\]|\[COMPILE"
+if run_test "[4] --TSAN (ThreadSanitizer)" --tsan; then
+    DETECTION="$DETECTION --tsan"
 fi
 echo ""
 
-# Summary
+if run_test "[5] --CLANG-TIDY (static analysis)" --clang-tidy; then
+    DETECTION="$DETECTION --clang-tidy"
+fi
+echo ""
+
+if run_test "[6] MAX MODE (all modes)" --max; then
+    DETECTION="$DETECTION --max"
+fi
+echo ""
+
 echo "========================================"
 echo "  SUMMARY"
 echo "========================================"
 
-DETECTION=""
-for FLAG in "" "--analyzer" "--valgrind" "--tsan"; do
-    OUTPUT=$($C_TESTER $FILE $FLAG 2>&1)
-    if echo "$OUTPUT" | grep -q "\[ERROR\]"; then
-        [ -z "$FLAG" ] && DETECTION="$DETECTION DEFAULT"
-        [ "$FLAG" = "--analyzer" ] && DETECTION="$DETECTION --analyzer"
-        [ "$FLAG" = "--valgrind" ] && DETECTION="$DETECTION --valgrind"
-        [ "$FLAG" = "--tsan" ] && DETECTION="$DETECTION --tsan"
-    fi
-done
-
 if [ -n "$DETECTION" ]; then
-    echo "DETECTED by: $DETECTION"
+    echo "DETECTED by:$DETECTION"
 else
     echo "No errors detected (all clean)"
 fi
