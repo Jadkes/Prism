@@ -18,11 +18,15 @@
 #include "check_engine.h"
 #include "annotation.h"
 #include "sym_exec.h"
+#include <stdlib.h>
+#include <ctype.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include "detect_libs.h"
 
 /*
  * compile_with_sanitizers - Compile source files with ASan and UBSan
  *
- * WHY: Sanitizers catch runtime errors at execution time that compilers
  *      miss. ASan catches memory errors, UBSan catches undefined behavior.
  *      Supports multiple source files compiled into a single binary.
  *
@@ -52,6 +56,11 @@ int compile_with_sanitizers(const char **sources, int source_count,
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
     }
 
+    if (i < source_count) {
+        snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
+    }
+
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
 
     pipe = popen(cmd, "r");
@@ -66,10 +75,9 @@ int compile_with_sanitizers(const char **sources, int source_count,
     return pclose(pipe);
 }
 
-/*
+/** 
  * compile_with_tsan - Compile source files with ThreadSanitizer
  *
- * WHY: TSan detects data races and thread synchronization bugs at runtime.
  *      ASan and TSan are mutually exclusive, so we use a separate function.
  *      -fno-omit-frame-pointer is required for useful stack traces.
  *      Supports multiple source files compiled into a single binary.
@@ -100,6 +108,11 @@ int compile_with_tsan(const char **sources, int source_count,
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
     }
 
+    if (pos >= sizeof(cmd) - 4) {
+        snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
+    }
+
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
 
     pipe = popen(cmd, "r");
@@ -117,7 +130,6 @@ int compile_with_tsan(const char **sources, int source_count,
 /*
  * compile_fallback - Compile without sanitizers as fallback
  *
- * WHY: Some systems lack sanitizer libraries. Fallback to basic
  *      compilation with -Wall -Wextra for basic error detection.
  *      Supports multiple source files compiled into a single binary.
  *
@@ -147,6 +159,11 @@ int compile_fallback(const char **sources, int source_count,
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
     }
 
+    if (pos >= sizeof(cmd) - 4) {
+        snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
+    }
+
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
 
     pipe = popen(cmd, "r");
@@ -164,7 +181,6 @@ int compile_fallback(const char **sources, int source_count,
 /*
  * compile_for_valgrind - Compile for Valgrind analysis
  *
- * WHY: Valgrind needs unoptimized code (-Og) to detect memory bugs.
  *      -O2 optimization can eliminate dead code (unused malloc results),
  *      making memory leaks invisible to Valgrind.
  *
@@ -193,6 +209,11 @@ int compile_for_valgrind(const char **sources, int source_count,
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
     }
 
+    if (pos >= sizeof(cmd) - 4) {
+        snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
+    }
+
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
 
     pipe = popen(cmd, "r");
@@ -210,7 +231,6 @@ int compile_for_valgrind(const char **sources, int source_count,
 /*
  * compile_for_warnings - Compile with warning flags only (no sanitizers)
  *
- * WHY: Sanitizers suppress certain warnings (e.g., strict-aliasing).
  *      A separate warning-only pass catches these at -O2 optimization.
  *      Supports multiple source files.
  *
@@ -235,6 +255,11 @@ int compile_for_warnings(const char **sources, int source_count,
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
     }
 
+    if (pos >= sizeof(cmd) - 4) {
+        snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
+    }
+
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
 
     FILE *pipe = popen(cmd, "r");
@@ -252,7 +277,6 @@ int compile_for_warnings(const char **sources, int source_count,
 /*
  * compile_cpp_with_sanitizers - Compile C++ sources with ASan and UBSan
  *
- * WHY: Same as compile_with_sanitizers but uses g++ for C++ sources.
  *      C++ sanitizer output may include std::error messages.
  *      Supports multiple source files compiled into a single binary.
  *
@@ -282,6 +306,11 @@ int compile_cpp_with_sanitizers(const char **sources, int source_count,
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
     }
 
+    if (pos >= sizeof(cmd) - 4) {
+        snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
+    }
+
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
 
     pipe = popen(cmd, "r");
@@ -299,7 +328,6 @@ int compile_cpp_with_sanitizers(const char **sources, int source_count,
 /*
  * compile_cpp_with_tsan - Compile C++ sources with ThreadSanitizer
  *
- * WHY: TSan detects data races in C++ programs.
  *      ASan and TSan are mutually exclusive.
  *      Supports multiple source files compiled into a single binary.
  *
@@ -328,6 +356,11 @@ int compile_cpp_with_tsan(const char **sources, int source_count,
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
     }
 
+    if (pos >= sizeof(cmd) - 4) {
+        snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
+    }
+
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
 
     pipe = popen(cmd, "r");
@@ -345,7 +378,6 @@ int compile_cpp_with_tsan(const char **sources, int source_count,
 /*
  * compile_with_analyzer - Compile with GCC static analyzer (-fanalyzer)
  *
- * WHY: GCC 13+ has a built-in static analyzer that performs symbolic
  *      data flow analysis without running the code. Catches leaks,
  *      use-after-free, double-free, NULL deref, buffer overflows
  *      at compile time. Requires no runtime execution.
@@ -376,6 +408,11 @@ int compile_with_analyzer(const char **sources, int source_count,
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
     }
 
+    if (pos >= sizeof(cmd) - 4) {
+        snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
+    }
+
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
 
     pipe = popen(cmd, "r");
@@ -393,7 +430,6 @@ int compile_with_analyzer(const char **sources, int source_count,
 /*
  * compile_with_clang_tidy - Run clang-tidy static analysis on source files
  *
- * WHY: clang-tidy performs static analysis without compiling or running
  *      the code. It catches bugprone patterns, concurrency issues,
  *      cert security issues, and clang-analyzer checks at source level.
  *      Unlike -fanalyzer, it has a broader set of checks.
@@ -421,6 +457,11 @@ int compile_with_clang_tidy(const char **sources, int source_count,
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
     }
 
+    if (pos >= sizeof(cmd) - 4) {
+        snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
+    }
+
     /* Add -- to separate clang-tidy args from compiler args */
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " -- -Wall -Wextra -O2 2>&1");
 
@@ -445,7 +486,6 @@ int compile_with_clang_tidy(const char **sources, int source_count,
 /*
  * compile_cpp_for_warnings - Compile C++ with warning flags only
  *
- * WHY: Catch C++-specific warnings that sanitizers might suppress.
  *      Supports multiple source files.
  *
  * @param sources - Array of paths to C++ source files
@@ -469,6 +509,11 @@ int compile_cpp_for_warnings(const char **sources, int source_count,
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
     }
 
+    if (pos >= sizeof(cmd) - 4) {
+        snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
+    }
+
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
 
     FILE *pipe = popen(cmd, "r");
@@ -486,7 +531,6 @@ int compile_cpp_for_warnings(const char **sources, int source_count,
 /*
  * compile_cpp_with_analyzer - Compile C++ with GCC static analyzer (-fanalyzer)
  *
- * WHY: C++ version of compile_with_analyzer using g++.
  *      Catches memory errors, leaks, and undefined behavior at compile time.
  */
 int compile_cpp_with_analyzer(const char **sources, int source_count,
@@ -508,6 +552,11 @@ int compile_cpp_with_analyzer(const char **sources, int source_count,
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
     }
 
+    if (pos >= sizeof(cmd) - 4) {
+        snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
+    }
+
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
 
     pipe = popen(cmd, "r");
@@ -522,10 +571,18 @@ int compile_cpp_with_analyzer(const char **sources, int source_count,
     return pclose(pipe);
 }
 
+/* SIGINT flag used by run_with_timeout's select loop */
+static volatile sig_atomic_t timeout_sigint_flag;
+
+static void on_sigint_timeout(int sig)
+{
+    (void)sig;
+    timeout_sigint_flag = 1;
+}
+
 /*
  * run_with_timeout - Shared helper: pipe/fork/execvp/select/read
  *
- * WHY: DRY up run_binary() and run_with_valgrind() which share
  *      identical pipe, fork, select-loop, and read logic.
  *      Caller builds argv[] and passes it; this function does the rest.
  *
@@ -566,7 +623,16 @@ int run_with_timeout(const char *binary, char *const argv[],
     }
 
     if (pid == 0) {
-        /* Child: redirect stdout/stderr to pipes, then exec */
+        /* Child: redirect stdin from /dev/null so programs
+         * that call scanf/getchar don't hang on the terminal. */
+        int null_fd = open("/dev/null", O_RDONLY);
+        if (null_fd >= 0) {
+            dup2(null_fd, STDIN_FILENO);
+            close(null_fd);
+        } else {
+            close(STDIN_FILENO);
+        }
+        /* Redirect stdout/stderr to pipes, then exec */
         close(stdout_pipe[0]);
         close(stderr_pipe[0]);
         dup2(stdout_pipe[1], STDOUT_FILENO);
@@ -583,6 +649,17 @@ int run_with_timeout(const char *binary, char *const argv[],
 
     close(stdout_pipe[1]);
     close(stderr_pipe[1]);
+
+    /* Install SIGINT handler so ^C in the parent breaks the
+     * select() loop rather than retrying on EINTR forever. */
+    struct sigaction old_sa;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_sigint_timeout;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, &old_sa);
+    timeout_sigint_flag = 0;
 
     struct timespec deadline;
     clock_gettime(CLOCK_MONOTONIC, &deadline);
@@ -609,7 +686,12 @@ int run_with_timeout(const char *binary, char *const argv[],
                             (deadline.tv_nsec - now.tv_nsec) / 1000000;
         if (remaining_ms <= 0) {
             kill(pid, SIGKILL);
-            waitpid(pid, &status, 0);
+            for (int retry = 0; retry < 100; retry++) {
+                pid_t w = waitpid(pid, &status, WNOHANG);
+                if (w == pid) break;
+                if (w < 0) { status = 0; break; }
+                usleep(10000);
+            }
             close(stdout_pipe[0]);
             close(stderr_pipe[0]);
             if (out_pos < output_size)
@@ -623,12 +705,24 @@ int run_with_timeout(const char *binary, char *const argv[],
         tv.tv_usec = (remaining_ms % 1000) * 1000;
 
         int ready = select(max_fd + 1, &read_fds, NULL, NULL, &tv);
-        if (ready < 0)
-            break;
+        if (ready < 0) {
+            if (errno == EINTR) {
+                if (timeout_sigint_flag)
+                    break;     /* ^C — bail out */
+                continue;      /* Spurious signal — retry */
+            }
+            break;         /* Other error — bail out */
+        }
 
         if (ready == 0) {
             kill(pid, SIGKILL);
-            waitpid(pid, &status, 0);
+            /* Busy-wait with WNOHANG so we don't hang if child is stuck */
+            for (int retry = 0; retry < 100; retry++) {
+                pid_t w = waitpid(pid, &status, WNOHANG);
+                if (w == pid) break;
+                if (w < 0) { status = 0; break; }
+                usleep(10000);  /* 10ms */
+            }
             close(stdout_pipe[0]);
             close(stderr_pipe[0]);
             if (out_pos < output_size)
@@ -672,7 +766,13 @@ int run_with_timeout(const char *binary, char *const argv[],
     if (err_pos < error_size)
         error_output[err_pos] = '\0';
 
-    waitpid(pid, &status, 0);
+    /* Reap the child (should already be dead since pipes are closed) */
+    status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+        status = 0;
+
+    /* Restore original SIGINT handler */
+    sigaction(SIGINT, &old_sa, NULL);
 
     if (WIFEXITED(status))
         return WEXITSTATUS(status);
@@ -685,7 +785,6 @@ int run_with_timeout(const char *binary, char *const argv[],
 /*
  * run_binary - Execute compiled binary with timeout
  *
- * WHY: Need to run test with timeout to catch infinite loops
  *      and capture both stdout and stderr for analysis.
  */
 int run_binary(const char *binary, const char *args,
@@ -708,7 +807,6 @@ int run_binary(const char *binary, const char *args,
 /*
  * run_with_valgrind - Execute binary under Valgrind for memory error detection
  *
- * WHY: Valgrind catches memory errors that sanitizers might miss,
  *      particularly uninitialized reads and subtle memory leaks.
  *      Runs much slower (10-50x) but provides complementary coverage.
  *
@@ -745,7 +843,6 @@ int run_with_valgrind(const char *binary,
 /*
  * generate_temp_path - Create a temporary file path
  *
- * WHY: Need to create temporary binary files for each test
  *      without conflicting with existing files or other tests.
  */
 char *generate_temp_path(const char *prefix, char *buffer, size_t buffer_size)
@@ -797,8 +894,6 @@ bool is_cpp_file(const char *path)
 
 /*
  * has_main_function - Check if source file contains main()
- *
- * WHY: Only files with main() can be compiled and executed.
  */
 bool has_main_function(const char *source_file)
 {
@@ -811,11 +906,17 @@ bool has_main_function(const char *source_file)
         return false;
 
     while (fgets(line, sizeof(line), fp)) {
-        if (string_contains(line, "int main") ||
-            string_contains(line, "main(")) {
-            found = true;
-            break;
+        char *p = strstr(line, "main");
+        while (p) {
+            /* Must be at identifier boundary (not part of a longer word) */
+            if ((p == line || (!isalnum((unsigned char)p[-1]) && p[-1] != '_')) &&
+                p[4] == '(') {
+                found = true;
+                break;
+            }
+            p = strstr(p + 4, "main");
         }
+        if (found) break;
     }
 
     fclose(fp);
@@ -826,6 +927,27 @@ bool has_main_function(const char *source_file)
 bool string_contains(const char *haystack, const char *needle)
 {
     return haystack && needle && strstr(haystack, needle) != NULL;
+}
+
+/* Case-insensitive version of string_contains */
+static bool string_contains_ic(const char *haystack, const char *needle)
+{
+    if (!haystack || !needle)
+        return false;
+    size_t nlen = strlen(needle);
+    size_t hlen = strlen(haystack);
+    if (nlen == 0) return true;
+    if (nlen > hlen) return false;
+    for (size_t i = 0; i <= hlen - nlen; i++) {
+        size_t j;
+        for (j = 0; j < nlen; j++) {
+            if (toupper((unsigned char)haystack[i + j]) !=
+                toupper((unsigned char)needle[j]))
+                break;
+        }
+        if (j == nlen) return true;
+    }
+    return false;
 }
 
 /* Check if str starts with prefix */
@@ -879,7 +1001,6 @@ long get_file_size(const char *path)
 /*
  * get_execution_time - Calculate elapsed time in milliseconds
  *
- * WHY: Need to track how long a test took to execute,
  *      and enforce timeout for infinite loops.
  */
 void get_execution_time(struct timespec *start, struct timespec *end, long *ms)
@@ -1056,7 +1177,6 @@ static const int num_patterns = sizeof(error_patterns) / sizeof(error_patterns[0
 /*
  * classify_error - Determine error pattern index from error line
  *
- * WHY: Sanitizer output contains specific keywords that identify
  *      the type of error (e.g., "heap-buffer-overflow").
  *      Returns pattern index so caller gets correct title/fix.
  *
@@ -1071,7 +1191,7 @@ int classify_error(const char *error_line)
         return -1;
 
     for (i = 0; i < num_patterns; i++) {
-        if (string_contains(error_line, error_patterns[i].pattern))
+        if (string_contains_ic(error_line, error_patterns[i].pattern))
             return i;
     }
 
@@ -1081,7 +1201,6 @@ int classify_error(const char *error_line)
 /*
  * parse_sanitizer_errors - Extract errors from sanitizer output
  *
- * WHY: Sanitizer output is multi-line with specific format.
  *      Parse it to extract structured error information.
  */
 int parse_sanitizer_errors(const char *error_output,
@@ -1096,6 +1215,16 @@ int parse_sanitizer_errors(const char *error_output,
         return 0;
 
     pos = error_output;
+
+    /* First pass: look for SUMMARY line to use as fallback title */
+    const char *summary = NULL;
+    const char *s = strstr(error_output, "SUMMARY:");
+    if (s) {
+        s += 8; /* skip "SUMMARY:" */
+        while (*s == ' ') s++;
+        summary = s;
+    }
+
     while (*pos && count < max_errors) {
         line_start = pos;
         line_end = strchr(pos, '\n');
@@ -1125,26 +1254,40 @@ int parse_sanitizer_errors(const char *error_output,
             errors[count].has_source = false;
             errors[count].source_file[0] = '\0';
 
+            /* Use SUMMARY as fallback if it's more descriptive */
+            const char *title = error_patterns[pattern_idx].title;
+            if (summary && !strstr(title, "Unknown"))
+                title = summary;
             snprintf(errors[count].title, sizeof(errors[count].title),
-                     "%s", error_patterns[pattern_idx].title);
+                     "%s", title);
             snprintf(errors[count].fix_suggestion,
                      sizeof(errors[count].fix_suggestion),
                      "%s", error_patterns[pattern_idx].fix);
 
-            /* Try to extract file:line from nearby lines */
-            const char *file_ref = strstr(line, ".c:");
-            if (file_ref) {
-                const char *path_start = file_ref;
+            /* Try to extract file:line from the line itself */
+            static const char *source_exts[] = {".cpp:", ".cc:", ".cxx:", ".hpp:", ".h:", ".c:", NULL};
+            for (int e = 0; source_exts[e]; e++) {
+                const char *ext_sep = strstr(line, source_exts[e]);
+                if (!ext_sep) continue;
+                /* Walk backward to find the start of the path */
+                const char *path_end = ext_sep + strlen(source_exts[e]) - 1;
+                const char *path_start = path_end;
                 while (path_start > line && *(path_start - 1) != ' ' &&
-                       *(path_start - 1) != '\t')
+                       *(path_start - 1) != '\t' && *(path_start - 1) != '\'')
                     path_start--;
-                size_t file_len = file_ref - path_start + 2;
-                if (file_len < MAX_PATH_LEN - 1) {
-                    memcpy(errors[count].source_file, path_start, file_len);
-                    errors[count].source_file[file_len] = '\0';
-                    errors[count].has_source = true;
+                size_t path_len = (size_t)(path_end - path_start);
+                if (path_len > 0 && path_len < MAX_PATH_LEN - 1) {
+                    /* Found a valid source extension — extract path */
+                    memcpy(errors[count].source_file, path_start, path_len);
+                    errors[count].source_file[path_len] = '\0';
+                    /* Extract line number after the colon */
+                    const char *ln = ext_sep + strlen(source_exts[e]);
+                    if (*ln >= '0' && *ln <= '9') {
+                        errors[count].source_line = atoi(ln);
+                        errors[count].has_source = true;
+                    }
                 }
-                errors[count].source_line = atoi(file_ref + 3);
+                break;
             }
 
             count++;
@@ -1159,22 +1302,55 @@ int parse_sanitizer_errors(const char *error_output,
 /*
  * parse_signal_errors - Detect errors from signal termination
  *
- * WHY: When a program crashes with a signal (SIGSEGV, SIGABRT, etc.),
  *      we can classify the error based on the signal received.
  */
 int parse_signal_errors(const char *error_output, int exit_code,
                         int signal, DetectedError *errors, int max_errors)
 {
     (void)error_output;
+    (void)exit_code;  /* Use signal parameter only — exit_code is unreliable */
     if (!errors || max_errors <= 0)
         return 0;
 
-    if (signal == SIGSEGV || exit_code == 139) {
+    if (signal == SIGSEGV) {
         errors[0].type = ERR_SEG;
         snprintf(errors[0].title, sizeof(errors[0].title),
                  "Segmentation Fault");
         snprintf(errors[0].fix_suggestion, sizeof(errors[0].fix_suggestion),
                  "The program accessed invalid memory. Check for NULL pointer dereferences, buffer overflows, or use-after-free bugs. Compile with -fsanitize=address for detailed diagnostics.");
+        errors[0].severity = 2;
+        errors[0].source_line = 0;
+        errors[0].has_source = false;
+        return 1;
+    }
+    if (signal == SIGABRT) {
+        errors[0].type = ERR_ABORT;
+        snprintf(errors[0].title, sizeof(errors[0].title),
+                 "Abort (SIGABRT)");
+        snprintf(errors[0].fix_suggestion, sizeof(errors[0].fix_suggestion),
+                 "The program aborted — possibly a failed assertion or runtime check.");
+        errors[0].severity = 2;
+        errors[0].source_line = 0;
+        errors[0].has_source = false;
+        return 1;
+    }
+    if (signal == SIGBUS) {
+        errors[0].type = ERR_SEG;
+        snprintf(errors[0].title, sizeof(errors[0].title),
+                 "Bus Error (SIGBUS)");
+        snprintf(errors[0].fix_suggestion, sizeof(errors[0].fix_suggestion),
+                 "The program attempted an invalid memory access (unaligned or non-existent address).");
+        errors[0].severity = 2;
+        errors[0].source_line = 0;
+        errors[0].has_source = false;
+        return 1;
+    }
+    if (signal == SIGFPE) {
+        errors[0].type = ERR_DIV_BY_ZERO;
+        snprintf(errors[0].title, sizeof(errors[0].title),
+                 "Floating Point Exception (SIGFPE)");
+        snprintf(errors[0].fix_suggestion, sizeof(errors[0].fix_suggestion),
+                 "The program crashed with a math error — check for division by zero or overflow.");
         errors[0].severity = 2;
         errors[0].source_line = 0;
         errors[0].has_source = false;
@@ -1199,7 +1375,6 @@ int parse_signal_errors(const char *error_output, int exit_code,
 /*
  * generate_fix_suggestion - Create fix suggestion for detected error
  *
- * WHY: The tool should be helpful by suggesting how to fix
  *      each type of error, not just report it.
  */
 void generate_fix_suggestion(DetectedError *error)
@@ -1250,7 +1425,6 @@ const char *get_error_name(ErrorType type)
 /*
  * get_source_line - Read a specific line from source file
  *
- * WHY: When reporting errors, showing the offending line of code
  *      helps the user understand and fix the problem.
  */
 int get_source_line(const char *source_file, int line_number,
@@ -1281,7 +1455,6 @@ int get_source_line(const char *source_file, int line_number,
 /*
  * init_colors - Initialize color codes based on whether colors are enabled
  *
- * WHY: Terminal colors help distinguish error types visually.
  *      Auto-detect TTY to avoid sending escape codes to pipes/files.
  */
 void init_colors(ColorCodes *colors, bool use_colors)
@@ -1313,7 +1486,6 @@ void init_colors(ColorCodes *colors, bool use_colors)
 /*
  * print_colored - Print formatted message with color
  *
- * WHY: Color-coded output makes errors stand out and improves
  *      readability of test results in the terminal.
  */
 void print_colored(const ColorCodes *colors, const char *color,
@@ -1338,7 +1510,6 @@ void print_colored(const ColorCodes *colors, const char *color,
 /*
  * print_banner - Print banner showing file(s) being tested
  *
- * WHY: Visual header helps user identify which file(s) are being
  *      tested, especially when running multiple tests.
  *      Shows file count when multiple files are provided.
  */
@@ -1369,7 +1540,6 @@ void print_banner(const ColorCodes *colors, const char **source_files, int sourc
 /*
  * print_summary - Print summary of test results
  *
- * WHY: Summarize findings for the user with clear pass/fail
  *      indication and actionable fix suggestions.
  *      Shows all source files when multiple files are used.
  */
@@ -1534,7 +1704,6 @@ void print_summary(const ColorCodes *colors, const TestResult *result,
 /*
  * generate_html_report - Write HTML report with error details
  *
- * WHY: Users need a shareable, styled report that shows errors,
  *      source context, and fix suggestions in a web-friendly format.
  *      Shows all source files when multiple files are used.
  */
@@ -1635,7 +1804,6 @@ int generate_html_report(const char *html_path, const char **source_files,
 /*
  * merge_analysis_error - Add or update error with location-aware dedup
  *
- * WHY: Multiple analysis passes may find the same error or different errors
  *      of the same type. Dedup by (type + file + line) so distinct errors
  *      at different locations are all reported, while the same error found
  *      by multiple modes is merged with combined mode tracking.
@@ -1650,7 +1818,7 @@ int generate_html_report(const char *html_path, const char **source_files,
  */
 static int merge_analysis_error(DetectedError *errors, int total_errors, int max_errors,
                                  const DetectedError *new_error,
-                                 unsigned int *error_modes, unsigned int mode_bit)
+                                 uint64_t *error_modes, uint64_t mode_bit)
 {
     for (int j = 0; j < total_errors; j++) {
         if (errors[j].type != new_error->type)
@@ -1682,7 +1850,6 @@ static int merge_analysis_error(DetectedError *errors, int total_errors, int max
 /*
  * run_max_analysis - Run ALL analysis modes and aggregate results
  *
- * WHY: Provides comprehensive analysis by running every detection mode
  *      (sanitizers, warnings, analyzer, clang-tidy, valgrind, tsan)
  *      and aggregating all unique errors with deduplication.
  *
@@ -1706,7 +1873,7 @@ int run_max_analysis(const char **sources, int source_count,
     /* Remove old seen_types bitset — replaced by merge_analysis_error below */
     const char *mode_names[] = {"Sanitizers", "Compiler Warnings", "GCC Analyzer",
                                 "Clang-Tidy", "Valgrind", "ThreadSanitizer"};
-    unsigned int error_modes[32] = {0};
+    uint64_t error_modes[32] = {0};
     long cumulative_time_ms = 0;
 
     generate_temp_path("c_tester", binary_path, sizeof(binary_path));
@@ -2054,7 +2221,6 @@ int run_max_analysis(const char **sources, int source_count,
 /*
  * print_usage - Print comprehensive help message and exit
  *
- * WHY: Users need clear documentation of available options and examples
  *      to use the tool effectively. Grouped options improve readability.
  *
  * @param prog_name - Program name from argv[0]
@@ -2131,7 +2297,6 @@ void print_usage(const char *prog_name, const ColorCodes *colors)
 /*
  * parse_compile_commands - Extract compile flags for a source file
  *
- * WHY: compile_commands.json is a standard format (CMake, Bear, etc.)
  *      Parse it to get the actual compile flags used in the project.
  *
  * @param json_path - Path to compile_commands.json
@@ -2181,7 +2346,6 @@ int parse_compile_commands(const char *json_path, const char *source_file,
 /*
  * run_with_compile_flags - Compile using flags from compile_commands.json
  *
- * WHY: Use the exact flags from the project's build system
  *      instead of guessing. This ensures accurate analysis.
  *
  * @param sources - Array of source files
@@ -2209,6 +2373,11 @@ int run_with_compile_flags(const char **sources, int source_count,
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
     }
 
+    if (pos >= sizeof(cmd) - 4) {
+        snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
+    }
+
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
 
     pipe = popen(cmd, "r");
@@ -2226,7 +2395,6 @@ int run_with_compile_flags(const char **sources, int source_count,
 /*
  * run_fuzz_analysis - Run binary with boundary inputs
  *
- * WHY: A binary may crash on empty strings, huge buffers, or boundary
  *      integer values but pass with normal input. This runs the binary
  *      under ASan with ~10 edge-case inputs via argv[1].
  */
@@ -2240,7 +2408,7 @@ int run_fuzz_analysis(const char *binary,
     char buf_64k[65536];   /* 65535B + null */
     int total_errors = 0;
     int input_count = 0;
-    unsigned int error_modes[32] = {0};
+    uint64_t error_modes[32] = {0};
     const char *inputs[16];
 
     /* Build the input list */
@@ -2326,7 +2494,7 @@ int run_fuzz_analysis(const char *binary,
                                                  max_errors,
                                                  &temp_errors[j],
                                                  error_modes,
-                                                 1u << (i % 31));
+                                                 1ull << i);
         }
 
         /* Append fuzz run output to combined sanitizer buffer */
@@ -2348,7 +2516,6 @@ int run_fuzz_analysis(const char *binary,
 /*
  * run_with_rerun - Run binary multiple times to detect heisenbugs
  *
- * WHY: Non-deterministic bugs like use-after-free may not trigger on
  *      every execution. Running N times reveals crash probability.
  *
  * @return 1 if heisenbug variant detected, 0 if deterministic
@@ -2364,7 +2531,7 @@ int run_with_rerun(const char *binary, int rerun_count,
     int timeout_count = 0;
     int clean_count = 0;
     int total = 0;
-    char first_error[MAX_OUTPUT_SIZE] = {0};
+    char first_error[1024] = {0};
     int have_error = 0;
 
     if (rerun_count > 32) rerun_count = 32;
@@ -2454,7 +2621,7 @@ int run_with_rerun(const char *binary, int rerun_count,
             char *nl = strchr(first_error, '\n');
             if (nl) *nl = '\0';
             /* Truncate first line if very long (fix_suggestion is small) */
-            first_error[255] = '\0';
+            first_error[sizeof(first_error) - 1] = '\0';
             snprintf(errors[idx].fix_suggestion,
                      sizeof(errors[idx].fix_suggestion),
                      "Crashed in %d/%d runs (timeout: %d, clean: %d). "
@@ -2479,7 +2646,6 @@ int run_with_rerun(const char *binary, int rerun_count,
 /*
  * check_resource_leaks - Detect file descriptor and OS resource leaks
  *
- * WHY: Classic Valgrind check for file descriptors left open at exit.
  *      Uses valgrind --track-fds=yes if available, otherwise measures
  *      /proc/self/fd count before/after execution in a child process.
  */
@@ -2572,38 +2738,37 @@ struct DangerPattern {
 /*
  * scan_dangerous_apis - Scan source for dangerous C functions
  *
- * WHY: Functions like strcpy(), sprintf(), gets() are common sources of
  *      CVEs. Many don't trigger compiler warnings. Catch them pre-runtime.
  */
 int scan_dangerous_apis(const char **sources, int source_count,
                         DetectedError *errors, int max_errors)
 {
     static const struct DangerPattern patterns[] = {
-        {"gets(", "Unsafe gets() Call",
+        {"gets", "Unsafe gets() Call",
          "Use fgets(buf, sizeof(buf), stdin). gets() has no bounds "
          "checking and cannot be used safely.",
          ERR_BUFFER_OVERFLOW, 3},
-        {"strcpy(", "Unsafe strcpy() Use",
+        {"strcpy", "Unsafe strcpy() Use",
          "Use strncpy() with explicit length check, or strlcpy() if "
          "available. strcpy() does not check destination bounds.",
          ERR_BUFFER_OVERFLOW, 3},
-        {"sprintf(", "Unsafe sprintf() Use",
+        {"sprintf", "Unsafe sprintf() Use",
          "Use snprintf(buf, sizeof(buf), ...). sprintf() does not check "
          "the destination buffer size.",
          ERR_BUFFER_OVERFLOW, 3},
-        {"strcat(", "Unsafe strcat() Use",
+        {"strcat", "Unsafe strcat() Use",
          "Check buffer space before concatenation, or use strlcat(). "
          "strcat() does not check destination bounds.",
          ERR_BUFFER_OVERFLOW, 3},
-        {"scanf(", "Unbounded scanf()",
+        {"scanf", "Unbounded scanf()",
          "Always specify field width limits: scanf(\"%%%ds\", ...). "
          "Unbounded %%s can overflow the destination buffer.",
          ERR_BUFFER_OVERFLOW, 2},
-        {"alloca(", "Stack Allocation (alloca)",
+        {"alloca", "Stack Allocation (alloca)",
          "Use malloc() instead. alloca() has no failure reporting and "
          "can silently cause stack overflow.",
          ERR_STACK_OVERFLOW, 2},
-        {"setjmp(", "setjmp Without Volatile",
+        {"setjmp", "setjmp Without Volatile",
          "Variables modified between setjmp/longjmp must be volatile "
          "to avoid undefined behavior.",
          ERR_UNINIT_VAR, 1},
@@ -2612,6 +2777,7 @@ int scan_dangerous_apis(const char **sources, int source_count,
     const size_t line_buf_size = 65536;
     char *line_buf = malloc(line_buf_size);
     int found = 0;
+    bool in_block_comment = false;
 
     if (!line_buf) return 0;
 
@@ -2620,14 +2786,12 @@ int scan_dangerous_apis(const char **sources, int source_count,
         if (!fp) continue;
 
         int line_num = 0;
-        /* Handle long lines that exceed the buffer by accumulating
-         * partial fgets reads until we reach a newline or EOF */
         size_t acc_len = 0;
         while (found < max_errors) {
             if (!fgets(line_buf + acc_len, line_buf_size - acc_len, fp)) {
                 if (acc_len > 0) {
-                    /* Final unterminated segment — process it */
                     line_num++;
+                    acc_len = 0;
                 } else {
                     break;
                 }
@@ -2636,45 +2800,97 @@ int scan_dangerous_apis(const char **sources, int source_count,
                 acc_len += chunk;
 
                 if (acc_len > 0 && line_buf[acc_len - 1] == '\n') {
-                    /* Complete line (possibly from multiple fgets calls) */
                     line_buf[acc_len - 1] = '\0';
                     line_num++;
                     acc_len = 0;
                 } else if (acc_len >= line_buf_size - 1) {
-                    /* Buffer full, no newline found — process what we have */
                     line_buf[line_buf_size - 1] = '\0';
                     line_num++;
                     acc_len = 0;
                 } else {
-                    /* Partial read, line continues — loop for more */
                     continue;
                 }
             }
 
-            for (int p = 0; p < num_patterns; p++) {
-                if (strstr(line_buf, patterns[p].func)) {
-                    /* Skip if inside a comment */
-                    char *trimmed = line_buf;
-                    while (*trimmed == ' ' || *trimmed == '\t')
-                        trimmed++;
-                    if (trimmed[0] == '/' && trimmed[1] == '/')
-                        break;
-                    if (trimmed[0] == '/' && trimmed[1] == '*')
-                        break;
+            /* Ignore lines inside block comments */
+            char *scan = line_buf;
+            while (*scan) {
+                if (in_block_comment) {
+                    char *end = strstr(scan, "*/");
+                    if (end) {
+                        in_block_comment = false;
+                        scan = end + 2;
+                    } else {
+                        break;  /* rest of line is still in block comment */
+                    }
+                } else {
+                    /* Check for // comment start — rest of line is a comment */
+                    char *line_comment = strstr(scan, "//");
+                    /* Check for block comment start */
+                    char *block_comment = strstr(scan, "/" "*");
+                    size_t line_comment_pos = line_comment ? (size_t)(line_comment - scan) : (size_t)-1;
+                    size_t block_comment_pos = block_comment ? (size_t)(block_comment - scan) : (size_t)-1;
 
-                    errors[found].type = patterns[p].type;
-                    snprintf(errors[found].title, sizeof(errors[found].title),
-                             "%s", patterns[p].title);
-                    snprintf(errors[found].fix_suggestion,
-                             sizeof(errors[found].fix_suggestion),
-                             "%s", patterns[p].fix);
-                    errors[found].severity = patterns[p].severity;
-                    errors[found].has_source = true;
-                    strncpy(errors[found].source_file, sources[f],
-                            sizeof(errors[found].source_file) - 1);
-                    errors[found].source_line = line_num;
-                    found++;
-                    break;  /* One error per line */
+                    /* Pick whichever comes first */
+                    char *comment_start = NULL;
+                    if (line_comment && block_comment) {
+                        if (line_comment_pos < block_comment_pos) {
+                            comment_start = line_comment;
+                        } else {
+                            comment_start = block_comment;
+                        }
+                    } else if (line_comment) {
+                        comment_start = line_comment;
+                    } else if (block_comment) {
+                        comment_start = block_comment;
+                    }
+
+                    /* Only search code before the comment start */
+                    size_t code_end = comment_start ? (size_t)(comment_start - scan) : strlen(scan);
+
+                    for (int p = 0; p < num_patterns; p++) {
+                        const char *pat = patterns[p].func;
+                        size_t pat_len = strlen(pat);
+                        char *pos = scan;
+                        while ((pos = strstr(pos, pat)) && (size_t)(pos - scan) < code_end) {
+                            /* Check identifier boundary before */
+                            bool before_ok = (pos == scan) ||
+                                (!isalnum((unsigned char)pos[-1]) && pos[-1] != '_');
+                            /* Check identifier boundary after (function call = after pat is '(') */
+                            bool after_ok = !isalnum((unsigned char)pos[pat_len]) &&
+                                            pos[pat_len] != '_';
+                            if (before_ok && after_ok) {
+                                errors[found].type = patterns[p].type;
+                                snprintf(errors[found].title,
+                                         sizeof(errors[found].title),
+                                         "%s", patterns[p].title);
+                                snprintf(errors[found].fix_suggestion,
+                                         sizeof(errors[found].fix_suggestion),
+                                         "%s", patterns[p].fix);
+                                errors[found].severity = patterns[p].severity;
+                                errors[found].has_source = true;
+                                strncpy(errors[found].source_file, sources[f],
+                                        sizeof(errors[found].source_file) - 1);
+                                errors[found].source_line = line_num;
+                                found++;
+                                break;
+                            }
+                            pos++;
+                        }
+                        if (found > 0 && errors[found - 1].source_line == line_num &&
+                            strcmp(errors[found - 1].source_file, sources[f]) == 0)
+                            break;  /* One error per line */
+                    }
+
+                    /* Handle block comment start not yet closed */
+                    if (block_comment && block_comment_pos < line_comment_pos) {
+                        in_block_comment = true;
+                        scan = block_comment + 2;
+                    } else if (line_comment) {
+                        break;  /* rest is comment */
+                    } else {
+                        break;  /* no more comments on this line */
+                    }
                 }
             }
         }
@@ -2682,14 +2898,11 @@ int scan_dangerous_apis(const char **sources, int source_count,
     }
 
     free(line_buf);
-
     return found;
 }
 
 /*
  * compile_with_basic_flags - Quick compile with -Wall -Wextra -Werror only
- *
- * WHY: --quick mode needs fast feedback without sanitizer overhead.
  */
 int compile_with_basic_flags(const char **sources, int source_count,
                               const char *binary,
@@ -2712,6 +2925,11 @@ int compile_with_basic_flags(const char **sources, int source_count,
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
     }
 
+    if (pos >= sizeof(cmd) - 4) {
+        snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
+    }
+
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
 
     pipe = popen(cmd, "r");
@@ -2725,7 +2943,6 @@ int compile_with_basic_flags(const char **sources, int source_count,
 /*
  * compute_source_hash - Compute MD5 hash of source file contents
  *
- * WHY: Used by --cache to detect source file changes.
  *      Returns 0 on success with hash in hash_buf.
  */
 int compute_source_hash(const char *source_file, char *hash_buf,
@@ -2754,7 +2971,6 @@ int compute_source_hash(const char *source_file, char *hash_buf,
 /*
  * save_cache_entry - Save compilation result to cache
  *
- * WHY: Stores hashed compilation output so unchanged files don't recompile.
  *      Cache is stored under ~/.cache/c_tester/<hash>.
  */
 void save_cache_entry(const char *hash, bool success,
@@ -2785,7 +3001,6 @@ void save_cache_entry(const char *hash, bool success,
 /*
  * load_cache_entry - Load cached compilation result
  *
- * WHY: Returns 0 and populates compiler_output if a valid cached
  *      compilation exists for the given source hash.
  */
 int load_cache_entry(const char *hash, bool *success,
@@ -2811,8 +3026,11 @@ int load_cache_entry(const char *hash, bool *success,
 
     *success = (raw_success != 0);
 
-    size_t bytes = fread(compiler_output, 1, output_size - 1, fp);
-    compiler_output[bytes] = '\0';
+    size_t bytes = 0;
+    if (output_size > 1)
+        bytes = fread(compiler_output, 1, output_size - 1, fp);
+    if (output_size > 0)
+        compiler_output[bytes] = '\0';
     fclose(fp);
 
     return 0;
@@ -2821,7 +3039,6 @@ int load_cache_entry(const char *hash, bool *success,
 /*
  * save_baseline - Save current errors as a baseline JSON file
  *
- * WHY: --generate-baseline creates a snapshot of known errors so that
  *      future runs can suppress them and only report new issues.
  */
 int save_baseline(const char *path, const DetectedError *errors,
@@ -2832,10 +3049,13 @@ int save_baseline(const char *path, const DetectedError *errors,
 
     fprintf(fp, "[\n");
     for (int i = 0; i < error_count; i++) {
+        /* Normalize path: strip leading ./ */
+        const char *sf = errors[i].source_file;
+        while (sf[0] == '.' && sf[1] == '/') sf += 2;
         fprintf(fp, "  {\"type\":%d,\"title\":\"%s\",\"file\":\"%s\","
                      "\"line\":%d,\"severity\":%d}%s\n",
                 (int)errors[i].type, errors[i].title,
-                errors[i].source_file, errors[i].source_line,
+                sf, errors[i].source_line,
                 errors[i].severity,
                 i < error_count - 1 ? "," : "");
     }
@@ -2847,7 +3067,6 @@ int save_baseline(const char *path, const DetectedError *errors,
 /*
  * load_baseline_and_filter - Load baseline and suppress matching errors
  *
- * WHY: --baseline=file.json removes known errors from the results,
  *      leaving only NEW issues for the developer to address.
  *      Mutates errors[] in place and returns the new error count.
  */
@@ -2858,7 +3077,7 @@ int load_baseline_and_filter(const char *path,
     if (!fp) return -1;
 
     /* Read entire file into buffer */
-    char buf[65536];
+    char buf[32768];
     size_t bytes = fread(buf, 1, sizeof(buf) - 1, fp);
     buf[bytes] = '\0';
     fclose(fp);
@@ -2870,9 +3089,12 @@ int load_baseline_and_filter(const char *path,
     for (int i = 0; i < *error_count; i++) {
         DetectedError *e = &errors[i];
         char search_line[1024];
+        /* Normalize path for comparison: strip leading ./ */
+        const char *sf = e->source_file;
+        while (sf[0] == '.' && sf[1] == '/') sf += 2;
         snprintf(search_line, sizeof(search_line),
                  "\"type\":%d,\"file\":\"%s\",\"line\":%d",
-                 (int)e->type, e->source_file, e->source_line);
+                 (int)e->type, sf, e->source_line);
 
         if (string_contains(buf, search_line)) {
             /* Suppress this error */
@@ -2891,7 +3113,6 @@ int load_baseline_and_filter(const char *path,
 /*
  * run_coverage_analysis - Compile and run with --gcov code coverage
  *
- * WHY: Shows which lines and branches are actually executed when
  *      the binary is run under the test inputs.
  */
 int run_coverage_analysis(const char *binary, const char **sources,
@@ -2919,7 +3140,7 @@ int run_coverage_analysis(const char *binary, const char **sources,
         snprintf(cmd, sizeof(cmd),
                  "gcov -abc '%s' 2>&1", sources[s]);
 
-        char cov_output[65536];
+        char cov_output[32768];
         pipe = popen(cmd, "r");
         if (!pipe) continue;
 
@@ -2973,9 +3194,17 @@ int run_coverage_analysis(const char *binary, const char **sources,
         }
     }
 
-    /* Clean up .gcda and .gcno files */
-    snprintf(cmd, sizeof(cmd), "rm -f *.gcda *.gcno *.gcov 2>/dev/null");
-    system(cmd);
+    /* Clean up coverage artifacts — target known file paths only */
+    char gcda_name[MAX_PATH_LEN], gcno_name[MAX_PATH_LEN];
+    for (int s = 0; s < source_count; s++) {
+        snprintf(gcda_name, sizeof(gcda_name), "%s.gcda", sources[s]);
+        snprintf(gcno_name, sizeof(gcno_name), "%s.gcno", sources[s]);
+        unlink(gcda_name);
+        unlink(gcno_name);
+        /* gcov emits source.gcov for each source */
+        snprintf(gcda_name, sizeof(gcda_name), "%s.gcov", sources[s]);
+        unlink(gcda_name);
+    }
 
     return found;
 }
@@ -2983,7 +3212,6 @@ int run_coverage_analysis(const char *binary, const char **sources,
 /*
  * run_libfuzzer_analysis - Compile and run with libFuzzer
  *
- * WHY: libFuzzer performs coverage-guided mutation fuzzing to find
  *      crashes that simple boundary testing misses. Requires clang
  *      and a LLVMFuzzerTestOneInput() function in the source.
  */
@@ -2993,7 +3221,7 @@ int run_libfuzzer_analysis(const char **sources, int source_count,
                             int timeout_sec)
 {
     char cmd[MAX_PATH_LEN * 2 + 256];
-    char fuzz_out[65536];
+    char fuzz_out[32768];
     FILE *pipe;
     int found = 0;
     char binary_path[MAX_PATH_LEN];
@@ -3038,6 +3266,12 @@ int run_libfuzzer_analysis(const char **sources, int source_count,
 
     for (int i = 0; i < source_count && pos < sizeof(cmd) - 4; i++) {
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
+    }
+
+    if (pos >= sizeof(cmd) - 4) {
+        if (output)
+            snprintf(output, output_size, "Too many source files: command buffer overflow");
+        return -1;
     }
 
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
@@ -3102,7 +3336,6 @@ int run_libfuzzer_analysis(const char **sources, int source_count,
 /*
  * run_ultra_analysis - MAX on steroids — every mode, trick, and flag
  *
- * WHY: --ultra compiles at 4+ optimization levels, with every sanitizer
  *      variant, both strict-aliasing modes, hardened flags, gcov, and
  *      clang MSan. It then runs 20+ analysis passes in parallel:
  *      boundary fuzz, random fuzz, rerun for flaky detection, Valgrind,
@@ -3133,8 +3366,15 @@ static const struct ultra_compile_var ultra_variants[] = {
     /* 8  */ {"GCov -O0",                "gcc", "--coverage -O0 -g", false},
     /* 9  */ {"Analyzer -fanalyzer",     "gcc", "-fanalyzer -O1 -g", false},
     /* 10 */ {"ASan+UBSan -O1 C++",     "g++", "-fsanitize=address,undefined -O1 -g", true},
+    /* 11 */ {"ASan+UBSan -O2 C++",     "g++", "-fsanitize=address,undefined -O2 -g", true},
+    /* 12 */ {"ASan+UBSan -O0 C++",     "g++", "-fsanitize=address,undefined -O0 -g", true},
+    /* 13 */ {"TSan -O2 C++",           "g++", "-fsanitize=thread -O2 -g -fno-omit-frame-pointer", true},
+    /* 14 */ {"Hardened -O2 C++",       "g++", "-fsanitize=address,undefined -O2 -g -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fstack-clash-protection -fcf-protection=full", true},
+    /* 15 */ {"StrictAlias -O2 C++",    "g++", "-fsanitize=address,undefined -O2 -g -fstrict-aliasing -Wstrict-aliasing=3", true},
+    /* 16 */ {"Full UBSan -O1 C++",     "g++", "-fsanitize=undefined,shift,integer-divide-by-zero,null,alignment,object-size,float-divide-by-zero,float-cast-overflow,signed-integer-overflow,bounds,pointer-overflow -O1 -g -fno-sanitize-recover=all", true},
+    /* 17 */ {"Analyzer C++",           "g++", "-fanalyzer -O1 -g", true},
 };
-#define ULTRA_NUM_VARIANTS 11
+#define ULTRA_NUM_VARIANTS 18
 
 /*
  * ultra_find_binary - Find first binary whose variant name contains tag
@@ -3157,7 +3397,7 @@ int run_ultra_analysis(const char **sources, int source_count,
                         int timeout_sec, const ColorCodes *colors)
 {
     int total_errors = 0;
-    unsigned int error_modes[32] = {0};
+    uint64_t error_modes[32] = {0};
     bool is_cpp = is_cpp_file(sources[0]);
 
     /* ─── Compilation Wave (all binaries built in parallel) ─── */
@@ -3200,6 +3440,7 @@ int run_ultra_analysis(const char **sources, int source_count,
                                   binary_paths[i]);
             for (int s = 0; s < source_count && pos < sizeof(cmd) - 4; s++)
                 pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[s]);
+            if (pos >= sizeof(cmd) - 4) _exit(1);
             pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
             FILE *pp = popen(cmd, "r");
             if (pp) {
@@ -3251,16 +3492,21 @@ int run_ultra_analysis(const char **sources, int source_count,
                                           (const char **)binary_paths, \
                                           (const bool *)compile_ok, (tag))
 
-    /* Helper to write results from child process — structured data only */
+/* Helper to write results from child — pipe-escaped structured data */
 #define ULTRA_CHILD_RESULT(var_lo, var_lc, var_le) do { \
         (void)var_lo; \
         fprintf(rfp, "%d\n", var_lc); \
-        for (int jj = 0; jj < var_lc && jj < 16; jj++) \
-            fprintf(rfp, "%d|%s|%s|%d|%d|%d\n", \
-                    (int)var_le[jj].type, var_le[jj].title, \
-                    var_le[jj].fix_suggestion, \
+        for (int jj = 0; jj < var_lc && jj < 16; jj++) { \
+            fprintf(rfp, "%d|", (int)var_le[jj].type); \
+            for (const char *_p = var_le[jj].title; *_p; _p++) \
+                fputc((*_p == '|' || *_p == '\n') ? ' ' : *_p, rfp); \
+            fputc('|', rfp); \
+            for (const char *_p = var_le[jj].fix_suggestion; *_p; _p++) \
+                fputc((*_p == '|' || *_p == '\n') ? ' ' : *_p, rfp); \
+            fprintf(rfp, "|%d|%d|%d\n", \
                     var_le[jj].source_line, var_le[jj].severity, \
                     var_le[jj].has_source ? 1 : 0); \
+        } \
     } while(0)
 
     /* 1. ASan + UBSan -O2 runtime */
@@ -3269,11 +3515,11 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("ASan+UBSan -O2");
             if (b) {
                 setenv("ASAN_OPTIONS","detect_leaks=1:detect_stack_use_after_return=1:strict_string_checks=1:detect_invalid_pointer_pairs=2:check_initialization_order=1",1);
-                char r_out[65536], r_err[65536];
+                char r_out[32768], r_err[32768];
                 run_binary(b, NULL, r_out,sizeof(r_out), r_err,sizeof(r_err), timeout_sec, NULL);
                 lc = parse_sanitizer_errors(r_err, le, 16);
                 snprintf(lo, sizeof(lo), "%s", r_err);
@@ -3289,11 +3535,11 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("ASan+UBSan -O0");
             if (b) {
                 setenv("ASAN_OPTIONS","detect_leaks=1:detect_stack_use_after_return=1",1);
-                char r_out[65536], r_err[65536];
+                char r_out[32768], r_err[32768];
                 run_binary(b, NULL, r_out,sizeof(r_out), r_err,sizeof(r_err), timeout_sec, NULL);
                 lc = parse_sanitizer_errors(r_err, le, 16);
                 snprintf(lo, sizeof(lo), "%s", r_err);
@@ -3309,12 +3555,12 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("Full UBSan");
             if (b) {
                 setenv("UBSAN_OPTIONS","print_stacktrace=1:halt_on_error=0",1);
                 setenv("ASAN_OPTIONS","detect_leaks=1",1);
-                char r_out[65536], r_err[65536];
+                char r_out[32768], r_err[32768];
                 run_binary(b, NULL, r_out,sizeof(r_out), r_err,sizeof(r_err), timeout_sec, NULL);
                 lc = parse_sanitizer_errors(r_err, le, 16);
                 snprintf(lo, sizeof(lo), "%s", r_err);
@@ -3330,11 +3576,11 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("Hardened");
             if (b) {
                 setenv("ASAN_OPTIONS","detect_leaks=1:detect_stack_use_after_return=1",1);
-                char r_out[65536], r_err[65536];
+                char r_out[32768], r_err[32768];
                 run_binary(b, NULL, r_out,sizeof(r_out), r_err,sizeof(r_err), timeout_sec, NULL);
                 lc = parse_sanitizer_errors(r_err, le, 16);
                 snprintf(lo, sizeof(lo), "%s", r_err);
@@ -3350,11 +3596,11 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("StrictAlias");
             if (b) {
                 setenv("ASAN_OPTIONS","detect_leaks=1",1);
-                char r_out[65536], r_err[65536];
+                char r_out[32768], r_err[32768];
                 run_binary(b, NULL, r_out,sizeof(r_out), r_err,sizeof(r_err), timeout_sec, NULL);
                 lc = parse_sanitizer_errors(r_err, le, 16);
                 snprintf(lo, sizeof(lo), "%s", r_err);
@@ -3370,11 +3616,11 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("ASan+UBSan -Os");
             if (b) {
                 setenv("ASAN_OPTIONS","detect_leaks=1",1);
-                char r_out[65536], r_err[65536];
+                char r_out[32768], r_err[32768];
                 run_binary(b, NULL, r_out,sizeof(r_out), r_err,sizeof(r_err), timeout_sec, NULL);
                 lc = parse_sanitizer_errors(r_err, le, 16);
                 snprintf(lo, sizeof(lo), "%s", r_err);
@@ -3390,10 +3636,10 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("Valgrind");
             if (b) {
-                char vg_out[65536], vg_err[65536];
+                char vg_out[32768], vg_err[32768];
                 run_with_valgrind(b, vg_out,sizeof(vg_out), vg_err,sizeof(vg_err), timeout_sec, NULL);
                 lc = parse_sanitizer_errors(vg_err, le, 16);
                 snprintf(lo, sizeof(lo), "%s", vg_err);
@@ -3409,7 +3655,7 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("Valgrind");
             if (b) {
                 char cmd[8192];
@@ -3442,11 +3688,11 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("TSan");
             if (b) {
                 setenv("TSAN_OPTIONS","report_atomic_races=1:halt_on_error=0",1);
-                char tsan_out[65536], tsan_err[65536];
+                char tsan_out[32768], tsan_err[32768];
                 run_binary(b, NULL, tsan_out,sizeof(tsan_out), tsan_err,sizeof(tsan_err), timeout_sec, NULL);
                 lc = parse_sanitizer_errors(tsan_err, le, 16);
                 snprintf(lo, sizeof(lo), "%s", tsan_err);
@@ -3462,7 +3708,7 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             char warn_out[MAX_OUTPUT_SIZE];
             int warn_ret;
             if (is_cpp_file(sources[0]))
@@ -3499,7 +3745,7 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             char analyze_out[MAX_OUTPUT_SIZE];
             if (is_cpp_file(sources[0]))
                 compile_cpp_with_analyzer(sources,source_count,"/dev/null",
@@ -3520,7 +3766,7 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             char tidy_out[MAX_OUTPUT_SIZE] = {0};
             if (system("command -v clang-tidy >/dev/null 2>&1") == 0) {
                 char cmd[16384];
@@ -3560,7 +3806,7 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("ASan+UBSan -O2");
             if (b) lc = run_fuzz_analysis(b,le,16,lo,sizeof(lo),timeout_sec);
             ULTRA_CHILD_RESULT(lo,lc,le); fclose(rfp); _exit(0);
@@ -3574,7 +3820,7 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("ASan+UBSan -O2");
             if (b && access(b,X_OK)==0) {
                 setenv("ASAN_OPTIONS","detect_leaks=1",1);
@@ -3584,9 +3830,10 @@ int run_ultra_analysis(const char **sources, int source_count,
                     if (!urandom) break;
                     size_t rlen = (f%3==0) ? 4 : (f%3==1) ? 64 : 256;
                     size_t got = fread(rbuf,1,rlen,urandom);
-                    char ifile[MAX_PATH_LEN];
-                    snprintf(ifile,sizeof(ifile),"/tmp/ultra_fuzz_%d_%d",(int)getpid(),f);
-                    FILE *ifp = fopen(ifile,"wb");
+                    char ifile[] = "/tmp/ultra_fuzz_XXXXXX";
+                    int fd = mkstemp(ifile);
+                    if (fd < 0) break;
+                    FILE *ifp = fdopen(fd,"wb");
                     if (ifp) { fwrite(rbuf,1,got,ifp); fclose(ifp); }
                     char rc[8192];
                     snprintf(rc,sizeof(rc),"timeout %d '%s' < '%s' 2>&1",timeout_sec/3,b,ifile);
@@ -3620,13 +3867,13 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("ASan+UBSan -O2");
             if (b && access(b,X_OK)==0) {
                 int crash=0, clean=0;
                 for (int r=0; r<3; r++) {
                     setenv("ASAN_OPTIONS","detect_leaks=1",1);
-                    char r_out[65536], r_err[65536];
+                    char r_out[32768], r_err[32768];
                     int ec = run_binary(b,NULL,r_out,sizeof(r_out),r_err,sizeof(r_err),timeout_sec,NULL);
                     if (ec==-1||ec>128) crash++; else if (ec==0) clean++;
                     size_t remain = sizeof(lo) - strlen(lo) - 2;
@@ -3658,7 +3905,7 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("GCov");
             if (b && access(b,X_OK)==0)
                 lc = run_coverage_analysis(b,sources,source_count,le,16,lo,sizeof(lo),timeout_sec);
@@ -3673,7 +3920,7 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             lc = scan_dangerous_apis(sources,source_count,le,16);
             ULTRA_CHILD_RESULT(lo,lc,le); fclose(rfp); _exit(0);
         }
@@ -3686,7 +3933,7 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             if (system("command -v clang >/dev/null 2>&1") == 0) {
                 char msan_bin[MAX_PATH_LEN];
                 generate_temp_path("c_tester_msan",msan_bin,sizeof(msan_bin));
@@ -3700,7 +3947,7 @@ int run_ultra_analysis(const char **sources, int source_count,
                 if (pp) { char buf[4096]; while(fgets(buf,sizeof(buf),pp)){} pclose(pp); }
                 if (access(msan_bin,X_OK)==0) {
                     setenv("MSAN_OPTIONS","halt_on_error=0:report_umrs=1",1);
-                    char m_out[65536], m_err[65536];
+                    char m_out[32768], m_err[32768];
                     run_binary(msan_bin,NULL,m_out,sizeof(m_out),m_err,sizeof(m_err),timeout_sec,NULL);
                     if (strlen(m_err)>0) {
                         lc = parse_sanitizer_errors(m_err,le,16);
@@ -3720,7 +3967,7 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             char cmd[16384];
             size_t pos = snprintf(cmd,sizeof(cmd),"gcc -fanalyzer -O0 -g -fsyntax-only");
             for (int s=0; s<source_count && pos<sizeof(cmd)-4; s++)
@@ -3740,22 +3987,24 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("ASan+UBSan -O2");
             if (b) {
-                char big_input[65536];
+                char big_input[32768];
                 memset(big_input,'A',sizeof(big_input)-1); big_input[sizeof(big_input)-1]='\0';
-                char ifile[MAX_PATH_LEN];
-                snprintf(ifile,sizeof(ifile),"/tmp/ultra_big_%d",(int)getpid());
-                FILE *ifp = fopen(ifile,"w");
-                if (ifp) { fwrite(big_input,1,sizeof(big_input)-1,ifp); fclose(ifp); }
-                setenv("ASAN_OPTIONS","detect_leaks=1",1);
-                char cmd[8192];
-                snprintf(cmd,sizeof(cmd),"timeout %d '%s' < '%s' 2>&1",timeout_sec,b,ifile);
-                FILE *pp = popen(cmd,"r");
-                if (pp) { size_t n=fread(lo,1,sizeof(lo)-1,pp); lo[n]='\0'; pclose(pp); }
-                lc = parse_sanitizer_errors(lo,le,16);
-                unlink(ifile);
+                char ifile[] = "/tmp/ultra_big_XXXXXX";
+                int fd = mkstemp(ifile);
+                if (fd >= 0) {
+                    FILE *ifp = fdopen(fd,"w");
+                    if (ifp) { fwrite(big_input,1,sizeof(big_input)-1,ifp); fclose(ifp); }
+                    setenv("ASAN_OPTIONS","detect_leaks=1",1);
+                    char cmd[8192];
+                    snprintf(cmd,sizeof(cmd),"timeout %d '%s' < '%s' 2>&1",timeout_sec,b,ifile);
+                    FILE *pp = popen(cmd,"r");
+                    if (pp) { size_t n=fread(lo,1,sizeof(lo)-1,pp); lo[n]='\0'; pclose(pp); }
+                    lc = parse_sanitizer_errors(lo,le,16);
+                    unlink(ifile);
+                }
             }
             ULTRA_CHILD_RESULT(lo,lc,le); fclose(rfp); _exit(0);
         }
@@ -3768,7 +4017,7 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("ASan+UBSan -O2");
             if (b) {
                 setenv("ASAN_OPTIONS","detect_leaks=1",1);
@@ -3789,10 +4038,10 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("ASan+UBSan -O2");
             if (b) {
-                char cmd[32768];
+                char cmd[16384];
                 size_t pos = snprintf(cmd,sizeof(cmd),"timeout %d '%s'",timeout_sec,b);
                 for (int a=0; a<100 && pos<sizeof(cmd)-128; a++)
                     pos += snprintf(cmd+pos,sizeof(cmd)-pos," ARG%d=%030d",a,a);
@@ -3812,11 +4061,11 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("ASan+UBSan -Os");
             if (b) {
                 setenv("ASAN_OPTIONS","detect_leaks=1",1);
-                char r_out[65536], r_err[65536];
+                char r_out[32768], r_err[32768];
                 run_binary(b,NULL,r_out,sizeof(r_out),r_err,sizeof(r_err),timeout_sec,NULL);
                 lc = parse_sanitizer_errors(r_err,le,16);
                 snprintf(lo,sizeof(lo),"%s",r_err);
@@ -3832,11 +4081,11 @@ int run_ultra_analysis(const char **sources, int source_count,
         if (pid == 0) {
             FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
             if (!rfp) _exit(0);
-            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+            DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
             const char *b = ULTRA_BIN("ASan+UBSan -O2");
             if (b) {
                 setenv("ASAN_OPTIONS","detect_leaks=1:check_memset_poison=1:max_malloc_fill_size=4096",1);
-                char r_out[65536], r_err[65536];
+                char r_out[32768], r_err[32768];
                 run_binary(b,NULL,r_out,sizeof(r_out),r_err,sizeof(r_err),timeout_sec,NULL);
                 lc = parse_sanitizer_errors(r_err,le,16);
                 snprintf(lo,sizeof(lo),"%s",r_err);
@@ -3851,7 +4100,7 @@ int run_ultra_analysis(const char **sources, int source_count,
 	    if (pid == 0) {
 	        FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
 	        if (!rfp) _exit(0);
-	        DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+	        DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
 	        AnnotationDB *ann = ann_load(NULL);
 	        if (ann) {
 	            for (int fi = 0; fi < source_count && lc < 16; fi++) {
@@ -3895,7 +4144,7 @@ int run_ultra_analysis(const char **sources, int source_count,
 	    if (pid == 0) {
 	        FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
 	        if (!rfp) _exit(0);
-	        DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[65536]={0};
+	        DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[1];
 	        for (int fi = 0; fi < source_count && lc < 16; fi++) {
 	            SymPathSet ps = sym_analyze_source(sources[fi], NULL, 0, 128);
 	            if (ps.path_count > 1) {
@@ -3918,7 +4167,6 @@ int run_ultra_analysis(const char **sources, int source_count,
 	    if (pid > 0) { analysis_passes[num_analysis].pid=pid; num_analysis++; }
 	}
 
-
     /* ─── Collect results from all analysis children ─── */
     for (int p = 0; p < num_analysis; p++) {
         int status;
@@ -3933,13 +4181,15 @@ int run_ultra_analysis(const char **sources, int source_count,
         for (int j = 0; j < lc && j < 16 && total_errors < max_errors; j++) {
             DetectedError e;
             memset(&e, 0, sizeof(e));
-            int has_src;
-            fscanf(rfp,"%d|%255[^|]|%1023[^|]|%d|%d|%d\n",
-                   (int*)&e.type, e.title, e.fix_suggestion,
-                   &e.source_line, &e.severity, &has_src);
+            int has_src, type_val;
+            if (fscanf(rfp,"%d|%255[^|]|%1023[^|]|%d|%d|%d\n",
+                       &type_val, e.title, e.fix_suggestion,
+                       &e.source_line, &e.severity, &has_src) < 5)
+                break;
+            e.type = (ErrorType)type_val;
             e.has_source = (has_src != 0);
             total_errors = merge_analysis_error(errors,total_errors,max_errors,
-                                                 &e,error_modes,1u << (p % 31));
+                                                 &e,error_modes,1ull << p);
         }
         fclose(rfp);
         unlink(analysis_passes[p].result_file);
@@ -3965,7 +4215,6 @@ int run_ultra_analysis(const char **sources, int source_count,
 /*
  * main - CLI entry point for c_tester
  *
- * WHY: Parse command-line arguments, orchestrate the compilation,
  *      execution, and error reporting workflow.
  *      Supports multiple source files compiled into a single binary.
  */
@@ -3973,10 +4222,11 @@ int main(int argc, char *argv[])
 {
     ColorCodes colors;
     TestResult result;
-    DetectedError errors[32];
+    enum { MAX_SRC_FILES = 256 };
+    DetectedError errors[MAX_SRC_FILES];
     memset(errors, 0, sizeof(errors));
     char binary_path[MAX_PATH_LEN];
-    const char *source_files[32];
+    const char *source_files[MAX_SRC_FILES];
     int source_count = 0;
     bool keep_binary = false;
     bool use_color = true;
@@ -3996,6 +4246,7 @@ int main(int argc, char *argv[])
     int error_count = 0;
     int i;
     bool use_quick = false;
+    const char *self_binary = argv[0];
     bool use_full = false;
     bool use_git_diff = false;
     bool use_gdb = false;
@@ -4096,8 +4347,11 @@ int main(int argc, char *argv[])
             print_usage(argv[0], &colors);
             return EXIT_SUCCESS;
         } else if (argv[i][0] != '-') {
-            if (source_count < 32) {
+            if (source_count < MAX_SRC_FILES) {
                 source_files[source_count++] = argv[i];
+            } else {
+                fprintf(stderr, "Warning: too many source files (max %d)\n",
+                        MAX_SRC_FILES);
             }
         }
     }
@@ -4395,7 +4649,7 @@ int main(int argc, char *argv[])
                 child_argv[arg_idx++] = (char *)source_files[i];
                 child_argv[arg_idx++] = NULL;
 
-                execvp("./c_tester", child_argv);
+                execvp(self_binary ? self_binary : "./c_tester", child_argv);
                 _exit(127);
             } else if (pid > 0) {
                 active_children++;
@@ -4474,7 +4728,7 @@ int main(int argc, char *argv[])
 
         FILE *pipe = popen(compile_cmd, "r");
         if (pipe) {
-            char comp_out[65536];
+            char comp_out[32768];
             size_t n = fread(comp_out, 1, sizeof(comp_out) - 1, pipe);
             comp_out[n] = '\0';
             pclose(pipe);
@@ -4528,7 +4782,7 @@ int main(int argc, char *argv[])
 
     /* --ast: AST-based analysis via libclang, no compilation needed */
     if (use_ast) {
-        unsigned int ast_modes[32] = {0};
+        uint64_t ast_modes[32] = {0};
         int ast_total = 0;
         print_colored(&colors, colors.bold, "[AST Analysis]\n");
 
@@ -4647,7 +4901,6 @@ int main(int argc, char *argv[])
                          result.compiler_output,
                          sizeof(result.compiler_output));
 
-
         if (comp_ret != 0) {
             print_colored(&colors, colors.red, "[COMPILE ERROR]\n");
             printf("%s\n", result.compiler_output);
@@ -4703,13 +4956,14 @@ int main(int argc, char *argv[])
             /* Valgrind (and --resources) need a binary without ASan.
              * Fuzz/rerun modes need ASan instrumentation — if combined
              * with --valgrind or --resources, ASan wins (fuzz/rerun
-             * execution branch runs first). */
-            const char *mode = use_resources ? "--resources" : "--valgrind";
-            (void)mode;
-            if (compile_for_valgrind(source_files, source_count, binary_path,
-                                    result.compiler_output,
-                                    sizeof(result.compiler_output)) == 0) {
-                result.compilation_success = true;
+             * execution branch runs first).
+             * Check valgrind availability first to avoid wasted compile. */
+            if (system("command -v valgrind > /dev/null 2>&1") == 0) {
+                if (compile_for_valgrind(source_files, source_count, binary_path,
+                                        result.compiler_output,
+                                        sizeof(result.compiler_output)) == 0) {
+                    result.compilation_success = true;
+                }
             }
         } else if (use_fuzz || rerun_count > 0) {
             /* Fuzz and rerun: compile with sanitizers for runtime analysis.
@@ -4865,7 +5119,10 @@ int main(int argc, char *argv[])
                                                      sizeof(result.sanitizer_output),
                                                      timeout_sec, NULL);
         } else {
-            setenv("ASAN_OPTIONS", "detect_leaks=1", 1);
+            if (use_tsan)
+                setenv("TSAN_OPTIONS", "report_atomic_races=1:halt_on_error=0", 1);
+            else
+                setenv("ASAN_OPTIONS", "detect_leaks=1", 1);
 
             result.exit_code = run_binary(binary_path, NULL,
                                             result.runtime_output,
@@ -4892,7 +5149,7 @@ int main(int argc, char *argv[])
         /* --gdb: run GDB on crash for detailed backtrace */
         if (use_gdb && result.exit_code > 0 && result.exit_code != EXIT_CLEAN) {
             char gdb_cmd[8192];
-            char gdb_out[65536];
+            char gdb_out[32768];
             FILE *gdb_pipe;
             snprintf(gdb_cmd, sizeof(gdb_cmd),
                      "gdb -batch -ex run -ex \"bt full\" "
