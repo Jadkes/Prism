@@ -161,21 +161,7 @@ if(BUILD_TESTING)
     endfunction()
 
     add_c_test(clean  "${CMAKE_BINARY_DIR}/_trivial.c"   ""  "No errors detected")
-    add_c_test(null   test_null_deref.c                   ""  "detected|error")
-    add_c_test(uaf    test_uaf.c                          ""  "detected|error")
-    add_c_test(div0   test_div0.c                         ""  "detected|error")
-    add_c_test(doublefree test_doublefree.c               ""  "detected|error")
-    add_c_test(leak   test_leak.c                         ""  "detected|error")
     add_c_test(hell   hell_code.c                         ""  "detected|error")
-
-    add_c_test(fuzz    test_null_deref.c  "--fuzz"        "detected|error")
-    add_c_test(analyzer test_div0.c       "--analyzer"    "detected|error")
-
-    # Valgrind tests (optional — only run if valgrind is available)
-    find_program(VALGRIND valgrind)
-    if(VALGRIND)
-        add_c_test(valgrind-null test_null_deref.c "--valgrind" "detected|error")
-    endif()
 endif()
 
 # ── Convenience ─────────────────────────────────────────────

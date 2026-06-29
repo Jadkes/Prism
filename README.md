@@ -65,7 +65,7 @@ annotation.c        — annotation parsing
 ```
 
 hell_code.c in the repo root has 15 different bugs if you want to
-see it work. test files for individual bugs are there too.
+see it work.
 
 ## license
 
