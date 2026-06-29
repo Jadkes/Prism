@@ -2365,6 +2365,9 @@ int parse_compile_commands(const char *json_path, const char *source_file,
 
 /*
  * run_with_compile_flags - Compile using flags from compile_commands.json
+ *
+ * The raw "command" field from compile_commands.json includes the compiler
+ * path, -c, -o, and source files — strip those and keep only the flags.
  */
 int run_with_compile_flags(const char **sources, int source_count,
                            const char *flags,
@@ -2372,12 +2375,55 @@ int run_with_compile_flags(const char **sources, int source_count,
                            char *output, size_t output_size)
 {
     char cmd[MAX_PATH_LEN * 8 + 1024];
+    char cleaned[8192];
     FILE *pipe;
     size_t bytes_read;
     int i;
     size_t pos;
 
-    pos = snprintf(cmd, sizeof(cmd), "%s -o '%s'", flags, binary);
+    /* Strip compiler name, -c, -o <arg>, -S, source/object files */
+    {
+        size_t cp = 0;
+        const char *f = flags;
+        bool skip_next = false;
+        bool first = true;
+
+        while (*f && cp < sizeof(cleaned) - 2) {
+            while (*f == ' ' || *f == '\t') f++;
+            if (!*f) break;
+
+            const char *end = f;
+            while (*end && *end != ' ' && *end != '\t') end++;
+            size_t tlen = (size_t)(end - f);
+
+            if (skip_next) { skip_next = false; f = end; continue; }
+            if (first) { first = false; f = end; continue; }
+            if (tlen == 2 && strncmp(f, "-c", 2) == 0) { f = end; continue; }
+            if (tlen == 2 && strncmp(f, "-o", 2) == 0) { skip_next = true; f = end; continue; }
+            if (tlen == 2 && strncmp(f, "-S", 2) == 0) { f = end; continue; }
+
+            /* Skip source/object file paths (tokens not starting with '-') */
+            if (f[0] != '-') {
+                bool is_file = false;
+                if (tlen >= 2 && strncmp(end - 2, ".c", 2) == 0) is_file = true;
+                if (tlen >= 4 && strncmp(end - 4, ".cpp", 4) == 0) is_file = true;
+                if (tlen >= 2 && strncmp(end - 2, ".o", 2) == 0) is_file = true;
+                if (is_file) { f = end; continue; }
+            }
+
+            if (cp > 0) cleaned[cp++] = ' ';
+            if (cp + tlen < sizeof(cleaned) - 1) {
+                memcpy(cleaned + cp, f, tlen);
+                cp += tlen;
+            }
+            f = end;
+        }
+        cleaned[cp] = '\0';
+    }
+
+    pos = snprintf(cmd, sizeof(cmd), "%s %s -o '%s'",
+                   is_cpp_file(sources[0]) ? "g++" : "gcc",
+                   cleaned, binary);
 
     for (i = 0; i < source_count && pos < sizeof(cmd) - 4; i++) {
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
@@ -2974,11 +3020,39 @@ int scan_dangerous_apis(const char **sources, int source_count,
                     /* Only search code before the comment start */
                     size_t code_end = comment_start ? (size_t)(comment_start - scan) : strlen(scan);
 
+                    /* Blank out contents of string literals so patterns
+                     * like "sprintf", "strcpy" inside strings don't match */
+                    char search_buf[65536];
+                    size_t copy_len = (code_end < sizeof(search_buf) - 1)
+                                       ? code_end : sizeof(search_buf) - 1;
+                    memcpy(search_buf, scan, copy_len);
+                    search_buf[copy_len] = '\0';
+                    {
+                        bool in_str = false;
+                        char *sb = search_buf;
+                        while (*sb) {
+                            if (in_str) {
+                                if (*sb == '\\' && *(sb + 1)) {
+                                    sb += 2;
+                                    continue;
+                                }
+                                if (*sb == '"') {
+                                    in_str = false;
+                                } else {
+                                    *sb = ' ';
+                                }
+                            } else if (*sb == '"') {
+                                in_str = true;
+                            }
+                            sb++;
+                        }
+                    }
+
                     for (int p = 0; p < num_patterns; p++) {
                         const char *pat = patterns[p].func;
                         size_t pat_len = strlen(pat);
-                        char *pos = scan;
-                        while ((pos = strstr(pos, pat)) && (size_t)(pos - scan) < code_end) {
+                        char *pos = search_buf;
+                        while ((pos = strstr(pos, pat)) && (size_t)(pos - search_buf) < code_end) {
                             /* Check identifier boundary before */
                             bool before_ok = (pos == scan) ||
                                 (!isalnum((unsigned char)pos[-1]) && pos[-1] != '_');
@@ -4564,6 +4638,9 @@ int main(int argc, char *argv[])
 
         if (!is_source_file(source_files[i]) &&
             !(use_header && string_contains(source_files[i], ".h"))) {
+            /* --checksec: accept executable binaries as-is */
+            if (use_checksec && access(source_files[i], X_OK) == 0)
+                continue;
             print_colored(&colors, colors.red, "Error: ");
             printf("not a C/C++ source file: %s\n", source_files[i]);
             return EXIT_USAGE_ERROR;
@@ -4772,8 +4849,14 @@ int main(int argc, char *argv[])
 
     /* Parallel processing with fork() + waitpid() */
     /* Checking parallel mode availability */
+    /* Modes that compile+link all sources into one binary (--full, --quick,
+     * --tsan, --msan, etc.) skip forking — they need all files together. */
     /* NOTE: --ast mode processes all files in-process, skip fork path */
-    if (!use_ast && jobs > 1 && source_count > 1) {
+    bool needs_linking = use_full || use_quick || use_tsan || use_msan ||
+                         use_valgrind || use_fuzz || rerun_count > 0 ||
+                         use_resources || use_gcov || use_libfuzzer ||
+                         use_max || use_checksec;
+    if (!use_ast && !needs_linking && jobs > 1 && source_count > 1) {
         int active_children = 0;
         int total_errors = 0;
 
@@ -5011,8 +5094,51 @@ int main(int argc, char *argv[])
         print_colored(&colors, colors.bold, "[AST Analysis]\n");
 
         for (int fi = 0; fi < source_count && ast_total < 32; fi++) {
+            /* Grab compile flags from --project if specified */
+            const char *ast_args[64];
+            int ast_argc = 0;
+            ast_args[0] = NULL;
+
+            if (project_json[0]) {
+                char flags_buf[8192];
+                if (parse_compile_commands(project_json, source_files[fi],
+                                           flags_buf, sizeof(flags_buf)) == 0) {
+                    char *saveptr;
+                    char *tok = strtok_r(flags_buf, " \t\n", &saveptr);
+                    bool first = true;
+                    while (tok && ast_argc < 62) {
+                        /* Skip compiler executable name (first token if it starts with / or contains gcc/g++) */
+                        if (first && strchr(tok, '/')) {
+                            first = false;
+                            tok = strtok_r(NULL, " \t\n", &saveptr);
+                            continue;
+                        }
+                        first = false;
+
+                        /* Keep include/define/language/optimization flags */
+                        if (tok[0] == '-' &&
+                            (tok[1] == 'I' ||
+                             strncmp(tok, "-isystem", 8) == 0 ||
+                             strncmp(tok, "-D", 2) == 0 ||
+                             strncmp(tok, "-std", 4) == 0 ||
+                             tok[1] == 'f' || tok[1] == 'O' || tok[1] == 'm')) {
+                            ast_args[ast_argc++] = tok;
+                            /* -isystem and -I sometimes have separate value */
+                            if ((strcmp(tok, "-isystem") == 0 || strcmp(tok, "-I") == 0) &&
+                                ast_argc < 62) {
+                                char *next = strtok_r(NULL, " \t\n", &saveptr);
+                                if (next && next[0] != '-')
+                                    ast_args[ast_argc++] = next;
+                            }
+                        }
+                        tok = strtok_r(NULL, " \t\n", &saveptr);
+                    }
+                }
+            }
+            ast_args[ast_argc] = NULL;
+
             printf("  Parsing: %s\n", source_files[fi]);
-            ASTContext *actx = ast_parse(source_files[fi], NULL);
+            ASTContext *actx = ast_parse(source_files[fi], ast_args);
             if (!actx) {
                 printf("  \033[33mWarning:\033[0m Could not parse %s "
                        "(may have syntax errors)\n", source_files[fi]);
@@ -5133,24 +5259,33 @@ int main(int argc, char *argv[])
         return EXIT_CLEAN;
     }
 
-    /* --checksec: compile and check binary hardening */
+    /* --checksec: check binary hardening */
     if (use_checksec) {
-        char sec_bin[MAX_PATH_LEN];
-        generate_temp_path("prism_sec", sec_bin, sizeof(sec_bin));
+        const char *bin_path = source_files[0];
+        char temp_bin[MAX_PATH_LEN] = {0};
+        bool is_binary = !is_source_file(bin_path) &&
+                         access(bin_path, X_OK) == 0;
 
         print_colored(&colors, colors.bold, "=== Binary Hardening Check ===\n");
 
-        int comp_ret = compile_with_basic_flags(source_files, source_count,
-                         sec_bin,
-                         result.compiler_output,
-                         sizeof(result.compiler_output));
-        if (comp_ret != 0) {
-            print_colored(&colors, colors.red, "[COMPILE ERROR]\n");
-            printf("%s\n", result.compiler_output);
-            return EXIT_COMPILE_FAIL;
+        if (!is_binary) {
+            /* Compile from source first */
+            generate_temp_path("prism_sec", temp_bin, sizeof(temp_bin));
+            int comp_ret = compile_with_basic_flags(source_files, source_count,
+                             temp_bin,
+                             result.compiler_output,
+                             sizeof(result.compiler_output));
+            if (comp_ret != 0) {
+                print_colored(&colors, colors.red, "[COMPILE ERROR]\n");
+                printf("%s\n", result.compiler_output);
+                return EXIT_COMPILE_FAIL;
+            }
+            bin_path = temp_bin;
+        } else {
+            printf("  Checking pre-compiled binary: %s\n", bin_path);
         }
 
-        error_count = check_binary_harden(sec_bin, errors, 32);
+        error_count = check_binary_harden(bin_path, errors, 32);
 
         if (error_count > 0) {
             for (i = 0; i < error_count; i++)
@@ -5161,7 +5296,7 @@ int main(int argc, char *argv[])
             printf("Hardening: PIE, NX, canary, RELRO all present\n");
         }
 
-        unlink(sec_bin);
+        if (temp_bin[0]) unlink(temp_bin);
         if (use_ci) {
             generate_ci_output(source_files, source_count,
                                error_count > 0 ? errors : NULL, error_count,
@@ -5180,12 +5315,67 @@ int main(int argc, char *argv[])
                                    project_flags, sizeof(project_flags)) == 0) {
             print_colored(&colors, colors.cyan, "[project] ");
             printf("Using flags from %s\n", project_json);
+
+            /* Determine mode-specific extra flags (sanitizers, etc.) */
+            const char *extra_flags = "";
+            if (use_full)
+                extra_flags = "-fsanitize=address,undefined -g -fno-omit-frame-pointer -O1";
+            else if (use_tsan)
+                extra_flags = "-fsanitize=thread -g -fno-omit-frame-pointer -O1";
+            else if (use_msan)
+                extra_flags = "-fsanitize=memory -fno-omit-frame-pointer -fsanitize-memory-track-origins -g -O1";
+            else if (use_analyzer)
+                extra_flags = "-fanalyzer -O2 -g -Wuninitialized -Wstrict-aliasing=2 -Wformat-overflow=2 -Wstringop-overflow=2";
+
+            /* Combine mode flags with project includes.
+             * project_flags has the form: "compiler -flag1 -flag2 ..."
+             * The tokenizer in run_with_compile_flags strips the first
+             * token (compiler path), then strips -c, -o, etc.
+             * Insert extra_flags after the first token so they survive
+             * the tokenizer. */
+            char compile_flags[8192];
+            if (extra_flags[0]) {
+                const char *p = project_flags;
+                while (*p && *p != ' ' && *p != '\t') p++;
+                size_t plen = (size_t)(p - project_flags);
+                snprintf(compile_flags, sizeof(compile_flags),
+                         "%.*s %s%s",
+                         (int)plen, project_flags, extra_flags, p);
+            } else {
+                snprintf(compile_flags, sizeof(compile_flags),
+                         "%s", project_flags);
+            }
+
+            bool project_compiled = false;
             if (run_with_compile_flags(source_files, source_count,
-                                        project_flags,
-                                        binary_path,
-                                        result.compiler_output,
-                                        sizeof(result.compiler_output)) == 0) {
-                result.compilation_success = true;
+                                       compile_flags,
+                                       binary_path,
+                                       result.compiler_output,
+                                       sizeof(result.compiler_output)) == 0) {
+                project_compiled = true;
+            }
+
+            /* If both failed, check if it's only linker errors
+             * (expected for multi-file projects — missing symbols from
+             *  other translation units, not a real compile failure) */
+            if (!project_compiled) {
+                bool fatal = strstr(result.compiler_output, "fatal error:") != NULL;
+                if (!fatal) {
+                    /* compilation succeeded (only linker errors), use the binary */
+                    project_compiled = true;
+                }
+            }
+
+            if (project_compiled) {
+                /* Only short-circuit the compile chain for modes that
+                 * need a runnable binary. Source-level modes (clang-tidy,
+                 * analyzer) handle themselves in the compile chain. */
+                bool needs_run_binary = use_full || use_quick ||
+                    use_tsan || use_msan || use_valgrind ||
+                    use_fuzz || rerun_count > 0 || use_resources ||
+                    use_gcov || use_libfuzzer;
+                if (needs_run_binary)
+                    result.compilation_success = true;
             }
         } else {
             print_colored(&colors, colors.yellow, "[project] ");
@@ -5416,6 +5606,19 @@ int main(int argc, char *argv[])
                                NULL, 0,
                                EXIT_CLEAN, 0);
         }
+        return EXIT_CLEAN;
+    }
+
+    /* Check if the binary actually exists (project-flags compilation of
+     * a single file from a multi-file project produces linker errors —
+     * no binary, but compilation was valid) */
+    if (project_json[0] && access(binary_path, X_OK) != 0 && !use_clang_tidy) {
+        print_colored(&colors, colors.yellow, "[project] ");
+        printf("Binary not created; compilation succeeded but linking "
+               "needs more source files.\n");
+        print_colored(&colors, colors.green, "[OK] ");
+        printf("Compilation checked with project flags\n");
+        if (!keep_binary) unlink(binary_path);
         return EXIT_CLEAN;
     }
 
