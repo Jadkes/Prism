@@ -192,6 +192,24 @@ int compile_with_conversion_warnings(const char **sources, int source_count,
                                       bool include_sign_conversion);
 
 /*
+ * run_cppcheck - Run cppcheck static analysis on source files
+ */
+int run_cppcheck(const char **sources, int source_count,
+                  char *output, size_t output_size);
+
+/*
+ * run_clang_analyze - Run Clang Static Analyzer on source files
+ */
+int run_clang_analyze(const char **sources, int source_count,
+                       char *output, size_t output_size);
+
+/*
+ * run_iwyu - Run include-what-you-use on source files
+ */
+int run_iwyu(const char **sources, int source_count,
+              char *output, size_t output_size);
+
+/*
  * compile_cpp_with_analyzer - Compile C++ with GCC static analyzer (-fanalyzer)
  */
 int compile_cpp_with_analyzer(const char **sources, int source_count,

@@ -538,6 +538,121 @@ int compile_with_conversion_warnings(const char **sources, int source_count,
 }
 
 /*
+ * run_cppcheck - Run cppcheck static analysis on source files
+ *     Writes error report to output buffer. No compilation needed.
+ *     Returns 0 on success, -1 if cppcheck not available.
+ */
+int run_cppcheck(const char **sources, int source_count,
+                  char *output, size_t output_size)
+{
+    char cmd[16384];
+    FILE *pipe;
+    size_t pos;
+
+    if (system("command -v cppcheck >/dev/null 2>&1") != 0) {
+        snprintf(output, output_size, "cppcheck not found");
+        return -1;
+    }
+
+    pos = snprintf(cmd, sizeof(cmd),
+                   "cppcheck --enable=all --suppress=missingIncludeSystem "
+                   "--suppress=unmatchedSuppression --suppress=checkersReport");
+    for (int i = 0; i < source_count && pos < sizeof(cmd) - 4; i++)
+        pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
+    pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
+
+    pipe = popen(cmd, "r");
+    if (!pipe) {
+        snprintf(output, output_size, "Failed to start cppcheck");
+        return -1;
+    }
+
+    size_t n = fread(output, 1, output_size - 1, pipe);
+    output[n] = '\0';
+    pclose(pipe);
+    return 0;
+}
+
+/*
+ * run_clang_analyze - Run Clang Static Analyzer on source files
+ *     Returns 0 on success, -1 if clang unavailable.
+ */
+int run_clang_analyze(const char **sources, int source_count,
+                       char *output, size_t output_size)
+{
+    char cmd[16384];
+    FILE *pipe;
+    size_t pos;
+
+    if (system("command -v clang >/dev/null 2>&1") != 0) {
+        snprintf(output, output_size, "clang not found");
+        return -1;
+    }
+
+    pos = snprintf(cmd, sizeof(cmd),
+                   "clang --analyze -Xanalyzer -analyzer-output=text");
+    for (int i = 0; i < source_count && pos < sizeof(cmd) - 4; i++)
+        pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
+    pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
+
+    pipe = popen(cmd, "r");
+    if (!pipe) {
+        snprintf(output, output_size, "Failed to start clang");
+        return -1;
+    }
+
+    size_t n = fread(output, 1, output_size - 1, pipe);
+    output[n] = '\0';
+    pclose(pipe);
+
+    /* Clean up analyzer artifact files */
+    for (int i = 0; i < source_count; i++) {
+        if (strlen(sources[i]) > MAX_PATH_LEN - 7)
+            continue;
+        char plist[MAX_PATH_LEN];
+        snprintf(plist, sizeof(plist), "%s.plist", sources[i]);
+        unlink(plist);
+    }
+
+    return 0;
+}
+
+/*
+ * run_iwyu - Run include-what-you-use on source files
+ *     Reports missing or superfluous #include directives.
+ *     Gracefully skips if IWYU is not installed.
+ *     Returns 0 on success, -1 if IWYU unavailable.
+ */
+int run_iwyu(const char **sources, int source_count,
+              char *output, size_t output_size)
+{
+    char cmd[16384];
+    FILE *pipe;
+    size_t pos;
+
+    if (system("command -v include-what-you-use >/dev/null 2>&1") != 0) {
+        snprintf(output, output_size, "include-what-you-use not found");
+        return -1;
+    }
+
+    pos = snprintf(cmd, sizeof(cmd), "include-what-you-use -c");
+    for (int i = 0; i < source_count && pos < sizeof(cmd) - 4; i++)
+        pos += snprintf(cmd + pos, sizeof(cmd) - pos, " '%s'", sources[i]);
+    pos += snprintf(cmd + pos, sizeof(cmd) - pos, " 2>&1");
+
+    pipe = popen(cmd, "r");
+    if (!pipe) {
+        snprintf(output, output_size, "Failed to start IWYU");
+        return -1;
+    }
+
+    size_t n = fread(output, 1, output_size - 1, pipe);
+    output[n] = '\0';
+    pclose(pipe);
+    return 0;
+}
+
+/*
  * compile_cpp_for_warnings - Compile C++ with warning flags only
  */
 int compile_cpp_for_warnings(const char **sources, int source_count,
