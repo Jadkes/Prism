@@ -1331,10 +1331,35 @@ const char *get_error_name(ErrorType type)
     case ERR_PURE_VIRTUAL:    return "Pure Virtual Method Called";
     case ERR_DOUBLE_FREE_CPP: return "Double Free or Corruption";
     case ERR_HARDENING:       return "Binary Hardening";
+    case ERR_STRICT_ALIASING:  return "Strict Aliasing Violation";
+    case ERR_CONVERSION_LOSS:  return "Implicit Conversion Loss";
+    case ERR_FLOAT_COMPARE:    return "Floating Point Comparison";
     case ERR_UNKNOWN:         return "Unknown Error";
     case ERR_NONE:            return "No Error";
     }
     return "Unknown Error";
+}
+
+/* Map ErrorType to CWE identifier */
+const char *error_to_cwe(ErrorType type)
+{
+    switch (type) {
+    case ERR_NULL_DEREF:         return "CWE-476";
+    case ERR_BUFFER_OVERFLOW:    return "CWE-120";
+    case ERR_USE_AFTER_FREE:     return "CWE-416";
+    case ERR_MEMORY_LEAK:        return "CWE-401";
+    case ERR_INT_OVERFLOW:       return "CWE-190";
+    case ERR_DIV_BY_ZERO:        return "CWE-369";
+    case ERR_UNINIT_VAR:         return "CWE-457";
+    case ERR_STACK_OVERFLOW:     return "CWE-121";
+    case ERR_DATA_RACE:          return "CWE-362";
+    case ERR_DOUBLE_FREE_CPP:    return "CWE-415";
+    case ERR_STRICT_ALIASING:    return "CWE-843";
+    case ERR_CONVERSION_LOSS:    return "CWE-197";
+    case ERR_FLOAT_COMPARE:      return "CWE-1079";
+    case ERR_HARDENING:          return "CWE-693";
+    default:                     return NULL;
+    }
 }
 
 /*
@@ -1642,7 +1667,8 @@ int generate_sarif_report(const char *sarif_path,
     fprintf(fp, "        \"driver\": {\n");
     fprintf(fp, "          \"name\": \"prism\",\n");
     fprintf(fp, "          \"version\": \"1.5\",\n");
-    fprintf(fp, "          \"informationUri\": \"https://github.com/Jadkes/Prism\"\n");
+    fprintf(fp, "          \"informationUri\": \"https://github.com/Jadkes/Prism\",\n");
+    fprintf(fp, "          \"taxonomies\": [{\"name\":\"CWE\",\"guid\":\"3333a5c4-5a4c-4c8a-8c3a-7a1c4e8d7f2a\",\"informationUri\":\"https://cwe.mitre.org/\"}]\n");
     fprintf(fp, "        }\n");
     fprintf(fp, "      },\n");
     fprintf(fp, "      \"results\": [\n");
@@ -1659,15 +1685,25 @@ int generate_sarif_report(const char *sarif_path,
         if (i > 0)
             fprintf(fp, ",\n");
 
+        const char *cwe = error_to_cwe(errors[i].type);
         fprintf(fp, "        {\n");
         fprintf(fp, "          \"ruleId\": \"%s\",\n", get_error_name(errors[i].type));
         fprintf(fp, "          \"level\": \"%s\",\n", level);
         fprintf(fp, "          \"message\": {\n");
-        fprintf(fp, "            \"text\": \"%s\"", errors[i].title);
+        if (cwe) {
+            fprintf(fp, "            \"text\": \"%s [%s]\"", errors[i].title, cwe);
+        } else {
+            fprintf(fp, "            \"text\": \"%s\"", errors[i].title);
+        }
         if (errors[i].fix_suggestion[0]) {
             fprintf(fp, ",\n");
-            fprintf(fp, "            \"markdown\": \"%s\\n\\n**Suggested fix:** %s\"\n",
-                    errors[i].title, errors[i].fix_suggestion);
+            if (cwe) {
+                fprintf(fp, "            \"markdown\": \"%s [%s]\\n\\n**Suggested fix:** %s\"\n",
+                        errors[i].title, cwe, errors[i].fix_suggestion);
+            } else {
+                fprintf(fp, "            \"markdown\": \"%s\\n\\n**Suggested fix:** %s\"\n",
+                        errors[i].title, errors[i].fix_suggestion);
+            }
         } else {
             fprintf(fp, "\n");
         }
@@ -1696,7 +1732,14 @@ int generate_sarif_report(const char *sarif_path,
             fprintf(fp, "\n");
         }
 
-        fprintf(fp, "        }");
+        if (cwe) {
+            fprintf(fp, ",\n");
+            fprintf(fp, "          \"properties\": {\n");
+            fprintf(fp, "            \"cweId\": \"%s\"\n", cwe);
+            fprintf(fp, "          }");
+        }
+
+        fprintf(fp, "\n        }");
     }
     fprintf(fp, "\n");
     fprintf(fp, "      ],\n");
@@ -1749,6 +1792,9 @@ void generate_ci_output(const char **source_files, int source_count,
                errors[i].source_file[0] ? errors[i].source_file : "");
         printf("      \"line\": %d,\n", errors[i].source_line);
         printf("      \"severity\": %d,\n", errors[i].severity);
+        const char *cwe = error_to_cwe(errors[i].type);
+        if (cwe)
+            printf("      \"cwe\": \"%s\",\n", cwe);
         printf("      \"fix\": \"%s\"\n", errors[i].fix_suggestion);
         printf("    }");
     }

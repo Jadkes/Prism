@@ -56,6 +56,9 @@ typedef enum {
     ERR_PURE_VIRTUAL,
     ERR_DOUBLE_FREE_CPP,
     ERR_HARDENING,
+    ERR_STRICT_ALIASING,
+    ERR_CONVERSION_LOSS,
+    ERR_FLOAT_COMPARE,
     ERR_UNKNOWN,
     ERR_NONE
 } ErrorType;
@@ -252,6 +255,9 @@ void generate_fix_suggestion(DetectedError *error);
 
 /* Get human-readable name for error type */
 const char *get_error_name(ErrorType type);
+
+/* Map ErrorType to CWE identifier string, or NULL if unmapped */
+const char *error_to_cwe(ErrorType type);
 
 /*
  * get_source_line - Read a specific line from source file
