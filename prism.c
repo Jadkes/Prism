@@ -2535,7 +2535,7 @@ void print_usage(const char *prog_name, const ColorCodes *colors)
     printf("  --full         Full analysis with ASan+UBSan sanitizers\n");
     printf("  --max          Run ALL analysis modes sequentially\n");
     printf("  --ultra        Compile 11 binary variants (O0/O1/O2/O3/gcov/libfuzzer),\n");
-    printf("                 run 24+ analysis passes in parallel via fork():\n");
+    printf("                 run 32 analysis passes in parallel via fork():\n");
     printf("                 ASan@O0/O1/O2/O3 + UBSan + TSan + Valgrind +\n");
     printf("                 clang-tidy + -fanalyzer + fuzz + rerun + gcov +\n");
     printf("                 libfuzzer + danger scan + resource leak + GDB\n");
@@ -2543,6 +2543,13 @@ void print_usage(const char *prog_name, const ColorCodes *colors)
     printf("  --msan         Use MemorySanitizer to detect uninitialized reads\n");
     printf("  --analyzer     Use GCC static analyzer (-fanalyzer)\n");
     printf("  --clang-tidy   Run clang-tidy static analysis\n");
+    printf("  --cppcheck     Run cppcheck static analysis on source files\n");
+    printf("  --clang-analyze Run Clang Static Analyzer (path-sensitive)\n");
+    printf("  --iwyu         Run include-what-you-use (check #include hygiene)\n");
+    printf("  --strict-aliasing Check for type-punning violations\n");
+    printf("  --conversion   Check for implicit type conversion loss\n");
+    printf("  --conversion=all Full conversion check including sign changes\n");
+    printf("  --float-equal  Check for floating-point ==/!= comparisons\n");
     printf("  --valgrind     Run under Valgrind for deep memory analysis\n");
     printf("  --fuzz         Run with boundary fuzz inputs (empty, huge, neg)\n");
     printf("  --rerun=N      Run N times to detect non-deterministic bugs\n");
@@ -2585,12 +2592,12 @@ void print_usage(const char *prog_name, const ColorCodes *colors)
            DEFAULT_TIMEOUT_SEC);
     printf("  --jobs=N, -j N Process N files in parallel (default: nproc)\n");
     printf("                 --ultra forces --jobs=nproc, compiles 11 binaries,\n");
-    printf("                 runs 24 analysis passes concurrently (not sequential)\n\n");
+    printf("                 runs 32 analysis passes concurrently (not sequential)\n\n");
 
     print_colored(colors, colors->bold, "Examples:\n");
     printf("  %s main.c                          Fast basic check (default)\n", prog_name);
     printf("  %s --full main.c                   Full ASan+UBSan analysis\n", prog_name);
-    printf("  %s --ultra main.c                  Ultimate analysis (11 bins, 24 passes)\n", prog_name);
+    printf("  %s --ultra main.c                  Ultimate analysis (11 bins, 32 passes)\n", prog_name);
     printf("  %s --git-diff main.c               Only check changed files\n", prog_name);
     printf("  %s --install-hook                  Install pre-commit hook\n", prog_name);
     printf("  %s main.c utils.c helper.c         Multi-file project\n\n", prog_name);
@@ -4419,14 +4426,14 @@ int run_ultra_analysis(const char **sources, int source_count,
 
     if (colors) {
         print_colored(colors, colors->cyan, "[ultra] ");
-        printf("Phase 2: %d/%d compiled — launching 26 analysis passes...\n",
+        printf("Phase 2: %d/%d compiled — launching 31 analysis passes...\n",
                compile_success_count, num_to_compile);
         fflush(stdout);
     }
 
     /* ─── Analysis Wave: each pass runs in a forked child,
      *     writes results to a temp file, parent collects ─── */
-#define MAX_ANALYSIS_PASSES 28
+#define MAX_ANALYSIS_PASSES 34
     struct {
         pid_t pid;
         char result_file[MAX_PATH_LEN];
@@ -5113,6 +5120,204 @@ int run_ultra_analysis(const char **sources, int source_count,
 	                lc++;
 	            }
 	            sym_free_paths(&ps);
+	        }
+	        ULTRA_CHILD_RESULT(lo,lc,le); fclose(rfp); _exit(0);
+	    }
+	    if (pid > 0) { analysis_passes[num_analysis].pid=pid; num_analysis++; }
+	}
+
+	/* 28. Strict aliasing check */
+	{
+	    pid_t pid = fork();
+	    if (pid == 0) {
+	        FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
+	        if (!rfp) _exit(0);
+	        DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[MAX_OUTPUT_SIZE]={0};
+	        compile_with_strict_aliasing(sources, source_count,
+	                                     lo, sizeof(lo));
+	        char *save, *line = strtok_r(lo, "\n", &save);
+	        while (line && lc < 16) {
+	            if (string_contains(line, "strict-aliasing")) {
+	                le[lc].type = ERR_STRICT_ALIASING;
+	                snprintf(le[lc].title, sizeof(le[lc].title), "%s", line);
+	                snprintf(le[lc].fix_suggestion, sizeof(le[lc].fix_suggestion),
+	                         "Use a union or memcpy instead of type-punning through a pointer.");
+	                le[lc].severity = 2;
+	                le[lc].has_source = false;
+	                lc++;
+	            }
+	            line = strtok_r(NULL, "\n", &save);
+	        }
+	        ULTRA_CHILD_RESULT(lo,lc,le); fclose(rfp); _exit(0);
+	    }
+	    if (pid > 0) { analysis_passes[num_analysis].pid=pid; num_analysis++; }
+	}
+
+	/* 29. Float-equal check */
+	{
+	    pid_t pid = fork();
+	    if (pid == 0) {
+	        FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
+	        if (!rfp) _exit(0);
+	        DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[MAX_OUTPUT_SIZE]={0};
+	        compile_with_float_equal_warning(sources, source_count,
+	                                         lo, sizeof(lo));
+	        char *save, *line = strtok_r(lo, "\n", &save);
+	        while (line && lc < 16) {
+	            if (string_contains(line, "float-equal")) {
+	                le[lc].type = ERR_FLOAT_COMPARE;
+	                snprintf(le[lc].title, sizeof(le[lc].title), "%s", line);
+	                snprintf(le[lc].fix_suggestion, sizeof(le[lc].fix_suggestion),
+	                         "Use an epsilon comparison: fabs(a - b) < 0.0001 instead of ==.");
+	                le[lc].severity = 2;
+	                le[lc].has_source = false;
+	                lc++;
+	            }
+	            line = strtok_r(NULL, "\n", &save);
+	        }
+	        ULTRA_CHILD_RESULT(lo,lc,le); fclose(rfp); _exit(0);
+	    }
+	    if (pid > 0) { analysis_passes[num_analysis].pid=pid; num_analysis++; }
+	}
+
+	/* 30. Conversion warnings */
+	{
+	    pid_t pid = fork();
+	    if (pid == 0) {
+	        FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
+	        if (!rfp) _exit(0);
+	        DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[MAX_OUTPUT_SIZE]={0};
+	        compile_with_conversion_warnings(sources, source_count,
+	                                         lo, sizeof(lo), false);
+	        char *save, *line = strtok_r(lo, "\n", &save);
+	        while (line && lc < 16) {
+	            if (string_contains(line, "conversion") ||
+	                string_contains(line, "may change value")) {
+	                le[lc].type = ERR_CONVERSION_LOSS;
+	                snprintf(le[lc].title, sizeof(le[lc].title), "%s", line);
+	                snprintf(le[lc].fix_suggestion, sizeof(le[lc].fix_suggestion),
+	                         "Use an explicit cast to make the conversion visible.");
+	                le[lc].severity = 1;
+	                le[lc].has_source = false;
+	                lc++;
+	            }
+	            line = strtok_r(NULL, "\n", &save);
+	        }
+	        ULTRA_CHILD_RESULT(lo,lc,le); fclose(rfp); _exit(0);
+	    }
+	    if (pid > 0) { analysis_passes[num_analysis].pid=pid; num_analysis++; }
+	}
+
+	/* 31. cppcheck */
+	{
+	    pid_t pid = fork();
+	    if (pid == 0) {
+	        FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
+	        if (!rfp) _exit(0);
+	        DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[MAX_OUTPUT_SIZE]={0};
+	        if (system("command -v cppcheck >/dev/null 2>&1") == 0) {
+	            run_cppcheck(sources, source_count, lo, sizeof(lo));
+	            char *save, *line = strtok_r(lo, "\n", &save);
+	            while (line && lc < 16) {
+	                if (strstr(line, ": error:") || strstr(line, ": warning:") ||
+	                    strstr(line, ": style:")) {
+	                    le[lc].type = ERR_UNKNOWN;
+	                    if (strstr(line, ": error:"))
+	                        le[lc].severity = 3;
+	                    else if (strstr(line, ": warning:"))
+	                        le[lc].severity = 2;
+	                    else
+	                        le[lc].severity = 1;
+	                    /* Extract line number */
+	                    char fcopy[MAX_LINE_LEN];
+	                    strncpy(fcopy, line, sizeof(fcopy) - 1);
+	                    char *c1 = strchr(fcopy, ':');
+	                    if (c1) {
+	                        int ln = atoi(c1 + 1);
+	                        if (ln > 0) {
+	                            le[lc].source_line = ln;
+	                            le[lc].has_source = true;
+	                        }
+	                    }
+	                    if (string_contains(line, "nullPointer"))
+	                        le[lc].type = ERR_NULL_DEREF;
+	                    else if (string_contains(line, "memleak"))
+	                        le[lc].type = ERR_MEMORY_LEAK;
+	                    else if (string_contains(line, "doubleFree"))
+	                        le[lc].type = ERR_DOUBLE_FREE_CPP;
+	                    else if (string_contains(line, "deallocuse"))
+	                        le[lc].type = ERR_USE_AFTER_FREE;
+	                    else if (string_contains(line, "zerodiv"))
+	                        le[lc].type = ERR_DIV_BY_ZERO;
+	                    else if (string_contains(line, "bufferAccessOutOfBounds"))
+	                        le[lc].type = ERR_BUFFER_OVERFLOW;
+	                    else if (string_contains(line, "uninitvar"))
+	                        le[lc].type = ERR_UNINIT_VAR;
+	                    else if (string_contains(line, "integerOverflow"))
+	                        le[lc].type = ERR_INT_OVERFLOW;
+	                    else if (string_contains(line, "negativeIndex"))
+	                        le[lc].type = ERR_BUFFER_OVERFLOW;
+
+	                    char msg_buf[256];
+	                    snprintf(msg_buf, sizeof(msg_buf), "[cppcheck] %s", line);
+	                    snprintf(le[lc].title, sizeof(le[lc].title), "%s", msg_buf);
+	                    snprintf(le[lc].fix_suggestion, sizeof(le[lc].fix_suggestion),
+	                             "Fix the issue reported by cppcheck at line %d.",
+	                             le[lc].source_line);
+	                    le[lc].has_source = le[lc].source_line > 0;
+	                    lc++;
+	                }
+	                line = strtok_r(NULL, "\n", &save);
+	            }
+	        }
+	        ULTRA_CHILD_RESULT(lo,lc,le); fclose(rfp); _exit(0);
+	    }
+	    if (pid > 0) { analysis_passes[num_analysis].pid=pid; num_analysis++; }
+	}
+
+	/* 32. clang --analyze */
+	{
+	    pid_t pid = fork();
+	    if (pid == 0) {
+	        FILE *rfp = fopen(analysis_passes[num_analysis].result_file, "w");
+	        if (!rfp) _exit(0);
+	        DetectedError le[16]; memset(le,0,sizeof(le)); int lc=0; char lo[MAX_OUTPUT_SIZE]={0};
+	        if (system("command -v clang >/dev/null 2>&1") == 0) {
+	            run_clang_analyze(sources, source_count, lo, sizeof(lo));
+	            char *save, *line = strtok_r(lo, "\n", &save);
+	            while (line && lc < 16) {
+	                if (strstr(line, ": warning:") && !strstr(line, ": note:")) {
+	                    le[lc].type = ERR_UNKNOWN;
+	                    le[lc].severity = 2;
+	                    if (string_contains(line, "core.NullDereference"))
+	                        le[lc].type = ERR_NULL_DEREF;
+	                    else if (string_contains(line, "core.DivideZero"))
+	                        le[lc].type = ERR_DIV_BY_ZERO;
+	                    else if (string_contains(line, "unix.Malloc"))
+	                        le[lc].type = ERR_MEMORY_LEAK;
+	                    else if (string_contains(line, "core.UndefinedBinaryOperatorResult"))
+	                        le[lc].type = ERR_UNINIT_VAR;
+
+	                    char fcopy[MAX_LINE_LEN];
+	                    strncpy(fcopy, line, sizeof(fcopy) - 1);
+	                    char *c1 = strchr(fcopy, ':');
+	                    if (c1) {
+	                        int ln = atoi(c1 + 1);
+	                        if (ln > 0) {
+	                            *c1 = '\0';
+	                            strncpy(le[lc].source_file, fcopy,
+	                                    sizeof(le[lc].source_file) - 1);
+	                            le[lc].source_line = ln;
+	                            le[lc].has_source = true;
+	                        }
+	                    }
+	                    snprintf(le[lc].title, sizeof(le[lc].title),
+	                             "[clang-analyze] %s", line);
+	                    le[lc].severity = 2;
+	                    lc++;
+	                }
+	                line = strtok_r(NULL, "\n", &save);
+	            }
 	        }
 	        ULTRA_CHILD_RESULT(lo,lc,le); fclose(rfp); _exit(0);
 	    }
