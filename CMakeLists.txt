@@ -6,7 +6,7 @@
 
 cmake_minimum_required(VERSION 3.16)
 project(prism
-    VERSION 1.4
+    VERSION 1.6
     DESCRIPTION "C/C++ Error Detection Tool"
     LANGUAGES C
 )

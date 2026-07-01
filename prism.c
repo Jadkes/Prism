@@ -2173,7 +2173,9 @@ int run_max_analysis(const char **sources, int source_count,
     int total_errors = 0;
     /* Remove old seen_types bitset — replaced by merge_analysis_error below */
     const char *mode_names[] = {"Sanitizers", "Compiler Warnings", "GCC Analyzer",
-                                "Clang-Tidy", "Valgrind", "ThreadSanitizer"};
+                                "Clang-Tidy", "Valgrind", "ThreadSanitizer",
+                                "Strict Aliasing", "Float Comparison",
+                                "Conversion", "cppcheck", "clang-analyze"};
     uint64_t error_modes[32] = {0};
     long cumulative_time_ms = 0;
 
@@ -2183,12 +2185,12 @@ int run_max_analysis(const char **sources, int source_count,
     printf("========================================\n");
     print_colored(colors, colors->bold, "  MAX MODE - Full Analysis\n");
     printf("========================================\n");
-    printf("Running 6 analysis passes...\n\n");
+    printf("Running 11 analysis passes...\n\n");
 
     /* ------------------------------------------------------------------ */
     /* Pass 1/6 — Sanitizers (ASan + UBSan)                                */
     /* ------------------------------------------------------------------ */
-    printf("[1/6] Sanitizers (ASan+UBSan)...");
+    printf("[1/11] Sanitizers (ASan+UBSan)...");
     fflush(stdout);
     memset(result->compiler_output, 0, sizeof(result->compiler_output));
     if (compile_with_sanitizers(sources, source_count, binary_path,
@@ -2235,7 +2237,7 @@ int run_max_analysis(const char **sources, int source_count,
     /* ------------------------------------------------------------------ */
     /* Pass 2/6 — Compiler Warnings                                        */
     /* ------------------------------------------------------------------ */
-    printf("[2/6] Compiler Warnings...");
+    printf("[2/11] Compiler Warnings...");
     fflush(stdout);
     memset(temp_output, 0, sizeof(temp_output));
     if (compile_for_warnings(sources, source_count, temp_output,
@@ -2301,7 +2303,7 @@ int run_max_analysis(const char **sources, int source_count,
     /* ------------------------------------------------------------------ */
     /* Pass 3/6 — GCC Analyzer (-fanalyzer)                                */
     /* ------------------------------------------------------------------ */
-    printf("[3/6] GCC Analyzer...");
+    printf("[3/11] GCC Analyzer...");
     fflush(stdout);
     memset(temp_output, 0, sizeof(temp_output));
     if (compile_with_analyzer(sources, source_count, binary_path,
@@ -2323,7 +2325,7 @@ int run_max_analysis(const char **sources, int source_count,
     /* ------------------------------------------------------------------ */
     /* Pass 4/6 — Clang-Tidy                                               */
     /* ------------------------------------------------------------------ */
-    printf("[4/6] Clang-Tidy...");
+    printf("[4/11] Clang-Tidy...");
     fflush(stdout);
     memset(temp_output, 0, sizeof(temp_output));
     if (compile_with_clang_tidy(sources, source_count, temp_output,
@@ -2396,7 +2398,7 @@ int run_max_analysis(const char **sources, int source_count,
     /* ------------------------------------------------------------------ */
     /* Pass 5/6 — Valgrind                                                 */
     /* ------------------------------------------------------------------ */
-    printf("[5/6] Valgrind...");
+    printf("[5/11] Valgrind...");
     fflush(stdout);
 
     /* Check if valgrind is available before attempting */
@@ -2443,7 +2445,7 @@ int run_max_analysis(const char **sources, int source_count,
     /* ------------------------------------------------------------------ */
     /* Pass 6/6 — ThreadSanitizer                                          */
     /* ------------------------------------------------------------------ */
-    printf("[6/6] ThreadSanitizer...");
+    printf("[6/11] ThreadSanitizer...");
     fflush(stdout);
     memset(result->compiler_output, 0, sizeof(result->compiler_output));
     if (compile_with_tsan(sources, source_count, binary_path,
@@ -2486,6 +2488,158 @@ int run_max_analysis(const char **sources, int source_count,
         printf(" COMPILE ERROR\n");
     }
 
+    /* ------------------------------------------------------------------ */
+    /* Pass 7/11 — Strict Aliasing Check                                    */
+    /* ------------------------------------------------------------------ */
+    printf("[7/11] Strict Aliasing...");
+    fflush(stdout);
+    memset(temp_output, 0, sizeof(temp_output));
+    if (compile_with_strict_aliasing(sources, source_count,
+                                      temp_output, sizeof(temp_output)) != 0 ||
+        temp_output[0] != '\0') {
+        DetectedError e;
+        memset(&e, 0, sizeof(e));
+        e.type = ERR_STRICT_ALIASING;
+        e.severity = 2;
+        e.has_source = false;
+        char *nl = strchr(temp_output, '\n');
+        if (nl) *nl = '\0';
+        if (strstr(temp_output, "strict-aliasing"))
+            snprintf(e.title, sizeof(e.title), "%s", temp_output);
+        else
+            snprintf(e.title, sizeof(e.title), "Strict aliasing violations found");
+        snprintf(e.fix_suggestion, sizeof(e.fix_suggestion),
+                 "Use a union or memcpy instead of type-punning through a pointer.");
+        total_errors = merge_analysis_error(errors, total_errors, max_errors,
+                                             &e, error_modes, 1u << 6);
+        printf(" DONE - yes\n");
+    } else {
+        printf(" OK - no violations\n");
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Pass 8/11 — Float-Equal Check                                       */
+    /* ------------------------------------------------------------------ */
+    printf("[8/11] Float Comparison...");
+    fflush(stdout);
+    memset(temp_output, 0, sizeof(temp_output));
+    if (compile_with_float_equal_warning(sources, source_count,
+                                          temp_output, sizeof(temp_output)) != 0 ||
+        temp_output[0] != '\0') {
+        DetectedError e;
+        memset(&e, 0, sizeof(e));
+        e.type = ERR_FLOAT_COMPARE;
+        e.severity = 2;
+        e.has_source = false;
+        char *nl = strchr(temp_output, '\n');
+        if (nl) *nl = '\0';
+        if (strstr(temp_output, "float-equal"))
+            snprintf(e.title, sizeof(e.title), "%s", temp_output);
+        else
+            snprintf(e.title, sizeof(e.title), "Floating-point equality comparison");
+        snprintf(e.fix_suggestion, sizeof(e.fix_suggestion),
+                 "Use an epsilon comparison: fabs(a - b) < EPSILON.");
+        total_errors = merge_analysis_error(errors, total_errors, max_errors,
+                                             &e, error_modes, 1u << 7);
+        printf(" DONE - yes\n");
+    } else {
+        printf(" OK - no violations\n");
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Pass 9/11 — Conversion Check                                         */
+    /* ------------------------------------------------------------------ */
+    printf("[9/11] Conversion Check...");
+    fflush(stdout);
+    memset(temp_output, 0, sizeof(temp_output));
+    if (compile_with_conversion_warnings(sources, source_count,
+                                          temp_output, sizeof(temp_output),
+                                          false) != 0 ||
+        temp_output[0] != '\0') {
+        DetectedError e;
+        memset(&e, 0, sizeof(e));
+        e.type = ERR_CONVERSION_LOSS;
+        e.severity = 1;
+        e.has_source = false;
+        char *nl = strchr(temp_output, '\n');
+        if (nl) *nl = '\0';
+        if (temp_output[0])
+            snprintf(e.title, sizeof(e.title), "%s", temp_output);
+        else
+            snprintf(e.title, sizeof(e.title), "Implicit conversion loss");
+        snprintf(e.fix_suggestion, sizeof(e.fix_suggestion),
+                 "Add explicit casts for narrowing conversions.");
+        total_errors = merge_analysis_error(errors, total_errors, max_errors,
+                                             &e, error_modes, 1u << 8);
+        printf(" DONE - yes\n");
+    } else {
+        printf(" OK - no violations\n");
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Pass 10/11 — cppcheck                                                */
+    /* ------------------------------------------------------------------ */
+    printf("[10/11] cppcheck...");
+    fflush(stdout);
+    memset(temp_output, 0, sizeof(temp_output));
+    {
+        int cp_count = 0;
+        if (system("command -v cppcheck >/dev/null 2>&1") == 0) {
+            run_cppcheck(sources, source_count, temp_output, sizeof(temp_output));
+            char *save, *line = strtok_r(temp_output, "\n", &save);
+            while (line && total_errors < max_errors) {
+                if (strstr(line, ": error:") || strstr(line, ": warning:") ||
+                    strstr(line, ": style:")) {
+                    DetectedError e;
+                    memset(&e, 0, sizeof(e));
+                    e.type = ERR_UNKNOWN;
+                    if (strstr(line, ": error:"))
+                        e.severity = 3;
+                    else if (strstr(line, ": warning:"))
+                        e.severity = 2;
+                    else
+                        e.severity = 1;
+                    e.has_source = false;
+                    snprintf(e.title, sizeof(e.title), "[cppcheck] %s", line);
+                    total_errors = merge_analysis_error(errors, total_errors,
+                                                         max_errors, &e, error_modes, 1u << 9);
+                    cp_count++;
+                }
+                line = strtok_r(NULL, "\n", &save);
+            }
+        }
+        printf(" DONE - %d findings\n", cp_count);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Pass 11/11 — clang --analyze                                         */
+    /* ------------------------------------------------------------------ */
+    printf("[11/11] clang-analyze...");
+    fflush(stdout);
+    memset(temp_output, 0, sizeof(temp_output));
+    {
+        int ca_count = 0;
+        if (system("command -v clang >/dev/null 2>&1") == 0) {
+            run_clang_analyze(sources, source_count, temp_output, sizeof(temp_output));
+            char *save, *line = strtok_r(temp_output, "\n", &save);
+            while (line && total_errors < max_errors) {
+                if (strstr(line, ": warning:") && !strstr(line, ": note:")) {
+                    DetectedError e;
+                    memset(&e, 0, sizeof(e));
+                    e.type = ERR_UNKNOWN;
+                    e.severity = 2;
+                    e.has_source = false;
+                    snprintf(e.title, sizeof(e.title), "[clang-analyze] %s", line);
+                    total_errors = merge_analysis_error(errors, total_errors,
+                                                         max_errors, &e, error_modes, 1u << 10);
+                    ca_count++;
+                }
+                line = strtok_r(NULL, "\n", &save);
+            }
+        }
+        printf(" DONE - %d findings\n", ca_count);
+    }
+
     /* Store cumulative time for display */
     result->execution_time_ms = cumulative_time_ms;
 
@@ -2499,7 +2653,7 @@ int run_max_analysis(const char **sources, int source_count,
         print_colored(colors, colors->red, "[ERROR] %s (found by: ",
                      errors[i].title);
         bool first = true;
-        for (int m = 0; m < 6; m++) {
+        for (int m = 0; m < 11; m++) {
             if (error_modes[i] & (1u << m)) {
                 if (!first) printf(", ");
                 printf("%s", mode_names[m]);
@@ -2524,7 +2678,7 @@ int run_max_analysis(const char **sources, int source_count,
  */
 void print_usage(const char *prog_name, const ColorCodes *colors)
 {
-    print_colored(colors, colors->bold, "prism v1.5 - C Error Detection Tool\n");
+    print_colored(colors, colors->bold, "prism v1.6 - C Error Detection Tool\n");
     printf("Detects memory errors, undefined behavior, and bugs in C/C++ code.\n\n");
 
     print_colored(colors, colors->bold, "Usage: ");
